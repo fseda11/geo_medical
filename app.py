@@ -240,7 +240,7 @@ if st.session_state.result_map is not None:
     summary        = summarize_establishments(establishments)
 
     # ── Métricas principais ───────────────────────────────────────────────────
-    cols = st.columns(7)
+    cols = st.columns(8)
     metrics = [
         ("🏙️ Municípios",    summary.get("municipios",     0)),
         ("🏥 Hospitais",      summary.get("hospitais",      0)),
@@ -248,59 +248,67 @@ if st.session_state.result_map is not None:
         ("🚨 UPAs",           summary.get("upas",           0)),
         ("💊 Farmácias",      summary.get("farmacias",      0)),
         ("🩺 UBS / Postos",   summary.get("ubs",            0)),
+        ("🏢 Outros",         summary.get("outros",         0)),
         ("⭐ Alto potencial", summary.get("alto_potencial", 0)),
     ]
     for col, (label, val) in zip(cols, metrics):
         col.metric(label, f"{val:,}")
+    # Valida soma para transparência
+    total_cats = sum(summary.get(k,0) for k in ["hospitais","clinicas","upas","farmacias","ubs","outros"])
+    if total_cats != summary.get("total", 0):
+        st.caption(f"Total: {summary.get('total',0):,} estabelecimentos (inclui {summary.get('total',0)-total_cats} sem categoria mapeada)")
 
     st.markdown("---")
 
-    # ── Mapa full-width ────────────────────────────────────────────────────────
-    st.markdown("#### 🗺️ Mapa de cobertura")
-    st.caption("💡 Use o controle de camadas ▶ (canto superior direito do mapa) para adicionar hospitais, clínicas, farmácias etc. por camada.")
-    st_folium(
-        st.session_state.result_map,
-        use_container_width=True,
-        height=640,
-        returned_objects=[],
-    )
+    # ── Mapa + Tabela ─────────────────────────────────────────────────────────
+    map_col, table_col = st.columns([3, 2], gap="medium")
 
-    # ── Tabela abaixo do mapa ──────────────────────────────────────────────────
-    st.markdown("#### 📋 Estabelecimentos — maiores potenciais")
-
-    if not establishments.empty:
-        RENAME_SUMMARY = {
-            "score_potencial":   "⭐ Score",
-            "no_razao_social":   "Estabelecimento",
-            "no_fantasia":       "Nome Fantasia",
-            "ds_tipo_unidade":   "Tipo",
-            "municipio_nome":    "Município",
-            "uf":                "UF",
-            "road_km":           "Dist. (km)",
-            "duration_text":     "Tempo",
-            "nu_telefone":       "Telefone",
-            "tp_pfpj":           "Natureza",
-            "tp_gestao":         "Gestão",
-            "turno_atendimento": "Turno",
-            "atend_sus":         "Atend. SUS",
-        }
-        display_cols = [c for c in RENAME_SUMMARY if c in establishments.columns]
-        col_labels = RENAME_SUMMARY
-
-        df_show = establishments[display_cols].rename(columns=col_labels)
-        st.dataframe(
-            df_show,
+    with map_col:
+        st.markdown("#### 🗺️ Mapa de cobertura")
+        st_folium(
+            st.session_state.result_map,
             use_container_width=True,
-            height=420,
-            column_config={
-                "⭐ Score": st.column_config.ProgressColumn(
-                    "⭐ Score", min_value=0, max_value=100, format="%d"
-                ),
-                "Dist. (km)": st.column_config.NumberColumn(format="%.0f km"),
-            },
+            height=560,
+            returned_objects=[],
         )
-    else:
-        st.info("Nenhum estabelecimento após aplicar os filtros.")
+
+    with table_col:
+        st.markdown("#### 📋 Estabelecimentos — maiores potenciais")
+
+        if not establishments.empty:
+            # Tabela resumida
+            RENAME_SUMMARY = {
+                "score_potencial":   "⭐ Score",
+                "no_razao_social":   "Estabelecimento",
+                "no_fantasia":       "Nome Fantasia",
+                "ds_tipo_unidade":   "Tipo",
+                "municipio_nome":    "Município",
+                "uf":                "UF",
+                "road_km":           "Dist. (km)",
+                "duration_text":     "Tempo",
+                "nu_telefone":       "Telefone",
+                "tp_pfpj":           "Natureza",
+                "tp_gestao":         "Gestão",
+                "turno_atendimento": "Turno",
+                "atend_sus":         "Atend. SUS",
+            }
+            display_cols = [c for c in RENAME_SUMMARY if c in establishments.columns]
+            col_labels = RENAME_SUMMARY
+
+            df_show = establishments[display_cols].rename(columns=col_labels)
+            st.dataframe(
+                df_show,
+                use_container_width=True,
+                height=520,
+                column_config={
+                    "⭐ Score": st.column_config.ProgressColumn(
+                        "⭐ Score", min_value=0, max_value=100, format="%d"
+                    ),
+                    "Dist. (km)": st.column_config.NumberColumn(format="%.0f km"),
+                },
+            )
+        else:
+            st.info("Nenhum estabelecimento após aplicar os filtros.")
 
     # ── Abas de detalhamento ──────────────────────────────────────────────────
     st.markdown("---")
@@ -379,11 +387,15 @@ if st.session_state.result_map is not None:
 
             # Excel
             buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-                export_df.to_excel(writer, sheet_name="Estabelecimentos", index=False)
-                if municipalities is not None:
-                    municipalities.to_excel(writer, sheet_name="Municípios", index=False)
-            buffer.seek(0)
+            try:
+                with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+                    export_df.to_excel(writer, sheet_name="Estabelecimentos", index=False)
+                    if municipalities is not None:
+                        municipalities.to_excel(writer, sheet_name="Municípios", index=False)
+                buffer.seek(0)
+            except Exception as e:
+                st.warning(f"Excel indisponível ({e}). Use o download CSV abaixo.")
+                buffer = None
 
             city_slug = (
                 origin.get("formatted_address", "busca")
@@ -393,9 +405,11 @@ if st.session_state.result_map is not None:
                 .lower()
             )
 
-            st.download_button(
+            if buffer is not None:
+              st.download_button(
                 "⬇️ Baixar Excel completo",
                 data=buffer,
+              
                 file_name=f"health_route_{city_slug}_{distance_km}km.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
