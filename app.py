@@ -240,7 +240,7 @@ if st.session_state.result_map is not None:
     summary        = summarize_establishments(establishments)
 
     # ── Métricas principais ───────────────────────────────────────────────────
-    cols = st.columns(8)
+    cols = st.columns(7)
     metrics = [
         ("🏙️ Municípios",    summary.get("municipios",     0)),
         ("🏥 Hospitais",      summary.get("hospitais",      0)),
@@ -248,182 +248,124 @@ if st.session_state.result_map is not None:
         ("🚨 UPAs",           summary.get("upas",           0)),
         ("💊 Farmácias",      summary.get("farmacias",      0)),
         ("🩺 UBS / Postos",   summary.get("ubs",            0)),
-        ("🏢 Outros",         summary.get("outros",         0)),
         ("⭐ Alto potencial", summary.get("alto_potencial", 0)),
     ]
     for col, (label, val) in zip(cols, metrics):
         col.metric(label, f"{val:,}")
-    # Valida soma para transparência
-    total_cats = sum(summary.get(k,0) for k in ["hospitais","clinicas","upas","farmacias","ubs","outros"])
-    if total_cats != summary.get("total", 0):
-        st.caption(f"Total: {summary.get('total',0):,} estabelecimentos (inclui {summary.get('total',0)-total_cats} sem categoria mapeada)")
 
     st.markdown("---")
 
-    # ── Mapa + Tabela ─────────────────────────────────────────────────────────
-    map_col, table_col = st.columns([3, 2], gap="medium")
+    # ── Mapa full-width ────────────────────────────────────────────────────────
+    st.markdown("#### 🗺️ Mapa de cobertura")
+    st.caption("💡 Use o controle de camadas ▶ (canto superior direito) para adicionar hospitais, clínicas, farmácias etc.")
+    st_folium(
+        st.session_state.result_map,
+        use_container_width=True,
+        height=640,
+        returned_objects=[],
+    )
 
-    with map_col:
-        st.markdown("#### 🗺️ Mapa de cobertura")
-        st_folium(
-            st.session_state.result_map,
-            use_container_width=True,
-            height=560,
-            returned_objects=[],
+    st.markdown("---")
+
+    # ── Tabela única: Score + CNES + Export ────────────────────────────────────
+    if not establishments.empty:
+        RENAME_FULL = {
+            "score_potencial":   "⭐ Score",
+            "co_cnes":           "Cód. CNES",
+            "co_cnpj":           "CNPJ",
+            "no_razao_social":   "Razão Social",
+            "no_fantasia":       "Nome Fantasia",
+            "ds_tipo_unidade":   "Tipo",
+            "no_logradouro":     "Endereço",
+            "nu_endereco":       "Número",
+            "no_bairro":         "Bairro",
+            "co_cep":            "CEP",
+            "municipio_nome":    "Município",
+            "uf":                "UF",
+            "road_km":           "Dist. (km)",
+            "duration_text":     "Tempo",
+            "nu_telefone":       "Telefone",
+            "no_email":          "E-mail",
+            "tp_pfpj":           "Natureza",
+            "tp_gestao":         "Gestão",
+            "turno_atendimento": "Turno",
+            "atend_sus":         "Atend. SUS",
+            "tem_cirurgia":      "Ctr. Cirúrgico",
+            "tem_obstetrico":    "Ctr. Obstétrico",
+            "dt_atualizacao":    "Atualização",
+        }
+        _drop = ["latitude", "longitude", "category", "tp_unidade",
+                 "qt_leito_internacao", "qt_leito_sus", "atend_ambulatorial"]
+
+        # Controles: busca + export na mesma linha
+        col_search, col_xlsx, col_csv = st.columns([3, 1, 1])
+        with col_search:
+            search_term = st.text_input("🔎 Filtrar por nome…", key="tab_search")
+
+        df_filtered = establishments
+        if search_term:
+            df_filtered = df_filtered[
+                df_filtered["no_razao_social"].str.contains(search_term, case=False, na=False)
+            ]
+
+        df_disp = df_filtered.drop(columns=_drop, errors="ignore")
+        df_disp = df_disp.rename(columns={k: v for k, v in RENAME_FULL.items() if k in df_disp.columns})
+
+        city_slug = (
+            origin.get("formatted_address", "busca")
+            .split(",")[0].strip().replace(" ", "_").lower()
         )
 
-    with table_col:
-        st.markdown("#### 📋 Estabelecimentos — maiores potenciais")
-
-        if not establishments.empty:
-            # Tabela resumida
-            RENAME_SUMMARY = {
-                "score_potencial":   "⭐ Score",
-                "no_razao_social":   "Estabelecimento",
-                "no_fantasia":       "Nome Fantasia",
-                "ds_tipo_unidade":   "Tipo",
-                "municipio_nome":    "Município",
-                "uf":                "UF",
-                "road_km":           "Dist. (km)",
-                "duration_text":     "Tempo",
-                "nu_telefone":       "Telefone",
-                "tp_pfpj":           "Natureza",
-                "tp_gestao":         "Gestão",
-                "turno_atendimento": "Turno",
-                "atend_sus":         "Atend. SUS",
-            }
-            display_cols = [c for c in RENAME_SUMMARY if c in establishments.columns]
-            col_labels = RENAME_SUMMARY
-
-            df_show = establishments[display_cols].rename(columns=col_labels)
-            st.dataframe(
-                df_show,
-                use_container_width=True,
-                height=520,
-                column_config={
-                    "⭐ Score": st.column_config.ProgressColumn(
-                        "⭐ Score", min_value=0, max_value=100, format="%d"
-                    ),
-                    "Dist. (km)": st.column_config.NumberColumn(format="%.0f km"),
-                },
-            )
-        else:
-            st.info("Nenhum estabelecimento após aplicar os filtros.")
-
-    # ── Abas de detalhamento ──────────────────────────────────────────────────
-    st.markdown("---")
-    tab_est, tab_munis, tab_export = st.tabs([
-        "🏥 Todos os estabelecimentos",
-        "🏙️ Municípios na rota",
-        "📥 Exportar dados",
-    ])
-
-    with tab_est:
-        if not establishments.empty:
-            # Barra de busca rápida
-            search_term = st.text_input("🔎 Filtrar por nome…", key="tab_search")
-            df_filtered = establishments
-            if search_term:
-                mask = df_filtered["no_razao_social"].str.contains(
-                    search_term, case=False, na=False
-                )
-                df_filtered = df_filtered[mask]
-
-            RENAME_FULL = {
-                "co_cnes":           "Cód. CNES",
-                "co_cnpj":           "CNPJ",
-                "no_razao_social":   "Razão Social",
-                "no_fantasia":       "Nome Fantasia",
-                "ds_tipo_unidade":   "Tipo",
-                "no_logradouro":     "Endereço",
-                "nu_endereco":       "Número",
-                "no_bairro":         "Bairro",
-                "co_cep":            "CEP",
-                "municipio_nome":    "Município",
-                "uf":                "UF",
-                "road_km":           "Dist. (km)",
-                "duration_text":     "Tempo",
-                "nu_telefone":       "Telefone",
-                "no_email":          "E-mail",
-                "tp_pfpj":           "Natureza",
-                "tp_gestao":         "Gestão",
-                "turno_atendimento": "Turno",
-                "atend_sus":         "Atend. SUS",
-                "tem_cirurgia":      "Ctr. Cirúrgico",
-                "tem_obstetrico":    "Ctr. Obstétrico",
-                "dt_atualizacao":    "Atualização",
-                "score_potencial":   "⭐ Score",
-            }
-            _drop = ["latitude", "longitude", "category", "tp_unidade",
-                     "qt_leito_internacao", "qt_leito_sus", "atend_ambulatorial"]
-            df_disp = df_filtered.drop(columns=_drop, errors="ignore")
-            df_disp = df_disp.rename(columns={k: v for k, v in RENAME_FULL.items()
-                                              if k in df_disp.columns})
-            st.dataframe(df_disp, use_container_width=True, height=450,)
-            st.caption(f"{len(df_filtered)} estabelecimento(s) exibido(s).")
-
-    with tab_munis:
-        if municipalities is not None and not municipalities.empty:
-            _col_map = {
-                "nome":          "Município",
-                "uf":            "UF",
-                "estado":        "Estado",
-                "road_km":       "Dist. (km)",
-                "duration_text": "Tempo estimado",
-                "straight_km":   "Dist. linear (km)",
-            }
-            _existing = [c for c in _col_map if c in municipalities.columns]
-            muni_display = municipalities[_existing].rename(columns=_col_map)
-            st.dataframe(muni_display, use_container_width=True, height=450)
-            st.caption(f"{len(municipalities)} município(s) alcançável(is) em até {distance_km} km por rodovias.")
-
-    with tab_export:
-        st.markdown("#### 📥 Download dos resultados")
-
-        if not establishments.empty:
-            export_df = establishments.drop(
-                columns=["latitude", "longitude"], errors="ignore"
-            )
-
-            # Excel
-            buffer = io.BytesIO()
+        with col_xlsx:
             try:
-                with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-                    export_df.to_excel(writer, sheet_name="Estabelecimentos", index=False)
+                buf = io.BytesIO()
+                with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+                    df_filtered.drop(columns=_drop, errors="ignore").to_excel(
+                        writer, sheet_name="Estabelecimentos", index=False)
                     if municipalities is not None:
                         municipalities.to_excel(writer, sheet_name="Municípios", index=False)
-                buffer.seek(0)
-            except Exception as e:
-                st.warning(f"Excel indisponível ({e}). Use o download CSV abaixo.")
-                buffer = None
+                buf.seek(0)
+                st.download_button("⬇️ Excel", data=buf,
+                    file_name=f"health_route_{city_slug}_{distance_km}km.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True)
+            except Exception:
+                st.warning("openpyxl não disponível")
 
-            city_slug = (
-                origin.get("formatted_address", "busca")
-                .split(",")[0]
-                .strip()
-                .replace(" ", "_")
-                .lower()
-            )
-
-            if buffer is not None:
-              st.download_button(
-                "⬇️ Baixar Excel completo",
-                data=buffer,
-              
-                file_name=f"health_route_{city_slug}_{distance_km}km.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-
-            # CSV
-            csv_data = export_df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "⬇️ Baixar CSV",
-                data=csv_data,
+        with col_csv:
+            st.download_button("⬇️ CSV",
+                data=df_filtered.drop(columns=_drop, errors="ignore").to_csv(index=False).encode("utf-8"),
                 file_name=f"health_route_{city_slug}_{distance_km}km.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
+                mime="text/csv", use_container_width=True)
+
+        st.dataframe(
+            df_disp,
+            use_container_width=True,
+            height=500,
+            column_config={
+                "⭐ Score": st.column_config.ProgressColumn(
+                    "⭐ Score", min_value=0, max_value=100, format="%d"),
+                "Dist. (km)": st.column_config.NumberColumn(format="%.0f km"),
+            },
+        )
+        st.caption(f"{len(df_filtered):,} estabelecimento(s) exibido(s) de {len(establishments):,} total.")
+
+    else:
+        st.info("Nenhum estabelecimento após aplicar os filtros.")
+
+    # ── Aba municípios ─────────────────────────────────────────────────────────
+    st.markdown("---")
+    with st.expander("🏙️ Municípios na rota", expanded=False):
+        if municipalities is not None and not municipalities.empty:
+            _col_map = {
+                "nome": "Município", "uf": "UF", "estado": "Estado",
+                "road_km": "Dist. (km)", "duration_text": "Tempo estimado",
+                "straight_km": "Dist. linear (km)",
+            }
+            _existing = [c for c in _col_map if c in municipalities.columns]
+            st.dataframe(municipalities[_existing].rename(columns=_col_map),
+                         use_container_width=True, height=350)
+            st.caption(f"{len(municipalities)} município(s) em até {distance_km} km por rodovias.")
 
             st.markdown(
                 f"""
