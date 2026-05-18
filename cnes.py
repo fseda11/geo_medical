@@ -118,11 +118,11 @@ def _fetch_cnes_municipality(co_municipio: str) -> List[Dict]:
     offset = 0
     max_pages = 30  # segurança contra loop infinito
 
-    for _ in range(max_pages):
+    for page in range(max_pages):
         params = {
             "codigo_municipio": co_municipio,
             "limit": CNES_PAGE_SIZE,
-            "offset": offset,
+            "offset": page * CNES_PAGE_SIZE,
         }
         try:
             resp = requests.get(url, params=params, timeout=15)
@@ -131,14 +131,18 @@ def _fetch_cnes_municipality(co_municipio: str) -> List[Dict]:
             data = resp.json()
             items = data.get("estabelecimentos", [])
             if not items:
-                break
+                break          # só para quando API retorna lista vazia
             all_items.extend(items)
-            if len(items) < CNES_PAGE_SIZE:
-                break
-            offset += CNES_PAGE_SIZE
             time.sleep(0.05)
         except Exception:
             break
+    # Remove duplicatas
+    seen, unique = set(), []
+    for item in all_items:
+        k = item.get("codigo_cnes")
+        if k not in seen:
+            seen.add(k); unique.append(item)
+    all_items = unique
 
     return all_items
 
@@ -163,18 +167,22 @@ def _calc_score(row: pd.Series) -> int:
     elif leitos_proxy >= 25:  score += 10
     elif leitos_proxy > 0:    score += 5
 
-    # 3. Serviços adicionais (0–10)
-    score += min(10, (int(row.get("tem_cirurgia") or 0) +
-                      int(row.get("tem_obstetrico") or 0) +
-                      int(row.get("atend_ambulatorial") or 0)) * 3)
+    # 3. Serviços adicionais (0–10) — suporta "Sim"/"Não" ou 0/1
+    def _sb(v):
+        if isinstance(v, str): return 1 if v.strip().lower() == "sim" else 0
+        try: return int(v or 0)
+        except: return 0
+    score += min(10, (_sb(row.get("tem_cirurgia")) +
+                      _sb(row.get("tem_obstetrico")) +
+                      _sb(row.get("atend_ambulatorial"))) * 3)
 
-    # 4. Gestão: federal/estadual prioriza alta complexidade (0–10)
+    # 4. Gestão — suporta código bruto ("M") ou decodificado ("Municipal")
     gestao = str(row.get("tp_gestao", "")).upper()
-    if gestao in ("E", "S"):   # estadual / federal
+    if any(x in gestao for x in ("E", "ESTADUAL", "FEDERAL", "SEM GESTÃO")):
         score += 10
-    elif gestao == "D":         # dupla
+    elif "DUPLA" in gestao or gestao == "D":
         score += 6
-    elif gestao == "M":         # municipal
+    elif "MUNICIPAL" in gestao or gestao == "M":
         score += 4
 
     return min(score, 100)
@@ -349,8 +357,9 @@ def summarize_establishments(df: pd.DataFrame) -> Dict:
         "upas":             (df["category"] == "upa").sum(),
         "farmacias":        (df["category"] == "farmacia").sum(),
         "ubs":              (df["category"] == "ubs").sum(),
+        "outros":           (df["category"] == "outro").sum(),
         "total_leitos":     int(df["qt_leito_internacao"].sum()),
         "total_leitos_sus": int(df["qt_leito_sus"].sum()),
-        "alto_potencial":   (df["score_potencial"] >= 30).sum(),
+        "alto_potencial":   (df["score_potencial"] >= 40).sum(),
         "score_medio":      round(df["score_potencial"].mean(), 1),
     }

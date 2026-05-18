@@ -231,20 +231,23 @@ if st.session_state.result_map is not None:
     summary        = summarize_establishments(establishments)
 
     # ── Métricas principais ───────────────────────────────────────────────────
-    cols = st.columns(7)
-    metrics = [
-        ("🏙️ Municípios",    summary.get("municipios",     0)),
-        ("🏥 Hospitais",      summary.get("hospitais",      0)),
-        ("🏨 Clínicas",       summary.get("clinicas",       0)),
-        ("🚨 UPAs",           summary.get("upas",           0)),
-        ("💊 Farmácias",      summary.get("farmacias",      0)),
-        ("🩺 UBS / Postos",   summary.get("ubs",            0)),
-        ("⭐ Alto potencial", summary.get("alto_potencial", 0)),
-    ]
-    for col, (label, val) in zip(cols, metrics):
-        col.metric(label, f"{val:,}")
+    n_corredor   = len(municipalities)
+    n_com_cnes   = summary.get("municipios", 0)
 
-    st.markdown("---")
+    cols = st.columns(8)
+    metrics = [
+        ("🏙️ Municípios",    n_corredor,                       f"{n_com_cnes} com dados CNES"),
+        ("🏥 Hospitais",      summary.get("hospitais",      0),  None),
+        ("🏨 Clínicas",       summary.get("clinicas",       0),  None),
+        ("🚨 UPAs",           summary.get("upas",           0),  None),
+        ("💊 Farmácias",      summary.get("farmacias",      0),  None),
+        ("🩺 UBS / Postos",   summary.get("ubs",            0),  None),
+        ("🏢 Outros",         summary.get("outros",         0),  None),
+        ("⭐ Alto potencial", summary.get("alto_potencial", 0),  None),
+    ]
+    for col, (label, val, delta) in zip(cols, metrics):
+        col.metric(label, f"{val:,}", delta=delta)
+
     st.markdown("---")
 
     # ── Mapa full-width ──────────────────────────────────────────────────────
