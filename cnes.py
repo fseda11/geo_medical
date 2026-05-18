@@ -7,6 +7,7 @@ cnes.py — Integração com a API pública do DATASUS/CNES
 """
 
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -20,6 +21,7 @@ from config import (
     CATEGORY_MAP,
     SCORE_WEIGHTS,
     HIGH_COST_RELEVANT_TYPES,
+    GOOGLE_API_KEY,
 )
 from municipalities import municipality_ibge_to_cnes_code
 
@@ -33,52 +35,31 @@ GESTAO_LABELS = {
     "D": "Dupla (Municipal + Estadual)",
 }
 
-NATUREZA_JURIDICA_LABELS = {
-    # Administração Pública Federal
-    "1000": "Órgão Público Federal",
-    "1014": "Autarquia Federal",
-    "1023": "Empresa Pública Federal",
-    "1031": "Fundação Pública Federal",
-    # Administração Pública Estadual
-    "1040": "Órgão Público Estadual",
-    "1104": "Autarquia Estadual",
-    "1112": "Empresa Pública Estadual",
-    "1120": "Fundação Pública Estadual",
-    # Administração Pública Municipal
-    "1139": "Órgão Público Municipal",
-    "1147": "Autarquia Municipal",
-    "1155": "Empresa Pública Municipal",
-    "1163": "Fundação Pública Municipal",
-    # Economia Mista
-    "2011": "Econ. Mista Federal",
-    "2038": "Econ. Mista Estadual",
+NATUREZA_LABELS = {
+    "1000": "Órgão Público Federal",       "1014": "Autarquia Federal",
+    "1023": "Empresa Pública Federal",     "1031": "Fundação Pública Federal",
+    "1040": "Órgão Público Estadual",      "1104": "Autarquia Estadual",
+    "1112": "Empresa Pública Estadual",    "1120": "Fundação Pública Estadual",
+    "1139": "Órgão Público Municipal",     "1147": "Autarquia Municipal",
+    "1155": "Empresa Pública Municipal",   "1163": "Fundação Pública Municipal",
+    "2011": "Econ. Mista Federal",         "2038": "Econ. Mista Estadual",
     "2054": "Econ. Mista Municipal",
-    # Privado sem fins lucrativos
-    "3034": "Serviço Social Autônomo (SESI/SESC…)",
-    "3069": "Fundação Privada",
-    "3077": "Organização Religiosa",
-    "3085": "Entidade Sindical",
-    "3131": "Cooperativa",
-    "3999": "Associação Privada (ONG/OS/OSCIP)",
-    # Privado com fins lucrativos
-    "4000": "Empresa Privada",
-    "4030": "Soc. Empresária Ltda.",
-    "4041": "Soc. Anônima (S/A)",
-    "4090": "Cooperativa",
-    "4120": "Empresa Individual",
-    # Pessoa Física
-    "5010": "Empresário Individual (PF)",
-    "5069": "MEI",
+    "3034": "Serv. Social Autônomo",       "3069": "Fundação Privada",
+    "3077": "Organização Religiosa",       "3085": "Entidade Sindical",
+    "1244": "Serv. Social Autônomo (SESI/SESC)",
+    "3131": "Cooperativa",                 "3999": "Associação Privada (ONG/OS)",
+    "4000": "Empresa Privada",             "4030": "Soc. Ltda.",
+    "4041": "Soc. Anônima (S/A)",          "4120": "Empresa Individual",
+    "5010": "Empresário Individual (PF)",  "5069": "MEI",
 }
 
-def _decode_gestao(code: str) -> str:
-    return GESTAO_LABELS.get(str(code).strip().upper(), code or "—")
+def _dec_gestao(v: str) -> str:
+    return GESTAO_LABELS.get(str(v).strip().upper(), v or "—")
 
-def _decode_natureza(code) -> str:
-    s = str(code).strip() if code else ""
-    if s in NATUREZA_JURIDICA_LABELS:
-        return NATUREZA_JURIDICA_LABELS[s]
-    # Fallback por faixa
+def _dec_nat(v) -> str:
+    s = str(v).strip() if v else ""
+    if s in NATUREZA_LABELS:
+        return NATUREZA_LABELS[s]
     try:
         n = int(s)
         if 1000 <= n < 2000: return "Entidade Pública"
@@ -90,12 +71,39 @@ def _decode_natureza(code) -> str:
         pass
     return s or "—"
 
-def _yn(val) -> str:
-    """Converte 0/1 ou True/False para Sim/Não."""
+def _yn(v) -> str:
     try:
-        return "Sim" if int(val) else "Não"
+        return "Sim" if int(v) else "Não"
     except Exception:
         return "—"
+
+def _yn_str(v: str) -> str:
+    s = str(v or "").strip().upper()
+    if s == "SIM": return "Sim"
+    if s == "NAO" or s == "NÃO": return "Não"
+    return s or "—"
+
+# ── Cache de telefones Google ──────────────────────────────────────────────────
+_google_phone_cache: Dict[str, str] = {}
+
+def _get_google_phone(name: str, city: str) -> str:
+    key = f"{name}|{city}"
+    if key in _google_phone_cache:
+        return _google_phone_cache[key]
+    try:
+        url = "https://maps.googleapis.com/maps/api/place/findplacefromtext/json"
+        params = {
+            "input":     f"{name} {city} Brasil",
+            "inputtype": "textquery",
+            "fields":    "formatted_phone_number",
+            "key":       GOOGLE_API_KEY,
+        }
+        resp = requests.get(url, params=params, timeout=6)
+        phone = (resp.json().get("candidates") or [{}])[0].get("formatted_phone_number", "") or ""
+    except Exception:
+        phone = ""
+    _google_phone_cache[key] = phone
+    return phone
 
 
 # ── Busca paginada por município ──────────────────────────────────────────────
@@ -206,40 +214,49 @@ def _normalize_establishment(est: Dict, muni_row: pd.Series) -> Dict:
     natureza = "Público" if any(x in esfera for x in ("MUNICIPAL","ESTADUAL","FEDERAL"))                else ("Privado" if str(est.get("descricao_natureza_juridica_estabelecimento") or "").startswith("4")
                      else "Público/Filantrópico")
 
-    raw_gestao   = est.get("tipo_gestao", "")
-    raw_nat_code = est.get("descricao_natureza_juridica_estabelecimento", "")
+    uf = muni_row.get("uf") or muni_row.get("uf", "")
+    if not uf:
+        # fallback: estado é "Rio de Janeiro" → pega sigla via codigo_uf
+        try:
+            from municipalities import _load_municipalities_csv
+            ibge = str(muni_row.get("codigo_ibge",""))
+            _df = _load_municipalities_csv()
+            row = _df[_df["codigo_ibge"] == ibge]
+            uf = row["uf"].iloc[0] if not row.empty else ""
+        except Exception:
+            uf = ""
 
     return {
-        "co_cnes":             str(est.get("codigo_cnes") or ""),
-        "co_cnpj":             str(est.get("numero_cnpj") or est.get("numero_cnpj_entidade") or ""),
-        "no_razao_social":     (est.get("nome_razao_social") or "").strip().title(),
-        "no_fantasia":         (est.get("nome_fantasia") or "").strip().title(),
-        "tp_unidade":          tp,
-        "ds_tipo_unidade":     type_desc,
-        "category":            category,
-        "no_logradouro":       est.get("endereco_estabelecimento", ""),
-        "nu_endereco":         est.get("numero_estabelecimento", ""),
-        "no_bairro":           est.get("bairro_estabelecimento", ""),
-        "co_cep":              est.get("codigo_cep_estabelecimento", ""),
-        "municipio_nome":      muni_row.get("nome", ""),
-        "uf":                  muni_row.get("uf", ""),
-        "road_km":             round(float(muni_row.get("road_km") or 0), 1),
-        "duration_text":       muni_row.get("duration_text", ""),
-        "latitude":            lat,
-        "longitude":           lng,
-        "nu_telefone":         est.get("numero_telefone_estabelecimento", ""),
-        "no_email":            est.get("endereco_email_estabelecimento", ""),
-        "qt_leito_internacao": leitos_proxy,
-        "qt_leito_sus":        tem_internacao * 25,
-        "tem_cirurgia":        _yn(tem_cirurgia),
-        "tem_obstetrico":      _yn(tem_obstetrico),
-        "atend_ambulatorial":  _yn(est.get("estabelecimento_possui_atendimento_ambulatorial") or 0),
-        "atend_sus":           "Sim" if str(est.get("estabelecimento_faz_atendimento_ambulatorial_sus","")).upper() == "SIM" else "Não",
-        "tp_gestao":           _decode_gestao(raw_gestao),
-        "tp_pfpj":             natureza,
-        "ds_natureza_juridica": _decode_natureza(raw_nat_code),
-        "turno_atendimento":   (est.get("descricao_turno_atendimento") or "").title(),
-        "dt_atualizacao":      est.get("data_atualizacao", ""),
+        "co_cnes":              str(est.get("codigo_cnes") or ""),
+        "co_cnpj":              str(est.get("numero_cnpj") or est.get("numero_cnpj_entidade") or ""),
+        "no_razao_social":      (est.get("nome_razao_social") or "").strip().title(),
+        "no_fantasia":          (est.get("nome_fantasia") or "").strip().title(),
+        "tp_unidade":           tp,
+        "ds_tipo_unidade":      type_desc,
+        "category":             category,
+        "no_logradouro":        (est.get("endereco_estabelecimento") or "").title(),
+        "nu_endereco":          est.get("numero_estabelecimento", ""),
+        "no_bairro":            (est.get("bairro_estabelecimento") or "").title(),
+        "co_cep":               est.get("codigo_cep_estabelecimento", ""),
+        "municipio_nome":       muni_row.get("nome", ""),
+        "uf":                   uf,
+        "road_km":              round(float(muni_row.get("road_km") or 0), 1),
+        "duration_text":        muni_row.get("duration_text", ""),
+        "latitude":             lat,
+        "longitude":            lng,
+        "nu_telefone_cnes":     est.get("numero_telefone_estabelecimento", "") or "",
+        "nu_telefone_google":   "",   # preenchido em pós-processamento
+        "no_email":             est.get("endereco_email_estabelecimento", "") or "",
+        "qt_leito_internacao":  leitos_proxy,
+        "qt_leito_sus":         tem_internacao * 25,
+        "tem_cirurgia":         _yn(tem_cirurgia),
+        "tem_obstetrico":       _yn(tem_obstetrico),
+        "atend_ambulatorial":   _yn(est.get("estabelecimento_possui_atendimento_ambulatorial") or 0),
+        "atend_sus":            _yn_str(est.get("estabelecimento_faz_atendimento_ambulatorial_sus", "")),
+        "tp_gestao":            _dec_gestao(est.get("tipo_gestao", "")),
+        "natureza_juridica":    _dec_nat(est.get("descricao_natureza_juridica_estabelecimento", "")),
+        "turno_atendimento":    (est.get("descricao_turno_atendimento") or "").replace("ATENDIMENTO ", "").title(),
+        "dt_atualizacao":       est.get("data_atualizacao", ""),
     }
 
 
@@ -252,58 +269,69 @@ def _safe_int(val) -> Optional[int]:
 
 # ── Ponto de entrada principal ────────────────────────────────────────────────
 
+def _worker(args):
+    muni, only_relevant = args
+    co = municipality_ibge_to_cnes_code(str(muni.get("codigo_ibge", "")))
+    if not co or co == "nan":
+        return []
+    rows = []
+    for est in _fetch_cnes_municipality(co):
+        n = _normalize_establishment(est, muni)
+        if only_relevant and n.get("tp_unidade", 0) not in HIGH_COST_RELEVANT_TYPES:
+            continue
+        rows.append(n)
+    return rows
+
+
 def get_establishments_for_municipalities(
     municipalities: pd.DataFrame,
     only_relevant: bool = False,
     progress_bar=None,
     progress_text_slot=None,
 ) -> pd.DataFrame:
-    """
-    Consulta o CNES para todos os municípios do DataFrame.
-    Retorna DataFrame consolidado com score de potencial calculado.
-
-    Parâmetros:
-      only_relevant: se True, retorna apenas tipos relevantes para alto custo
-    """
+    """Busca CNES em paralelo (5 workers) e enriquece com telefone Google."""
     all_rows: List[Dict] = []
     total = len(municipalities)
+    done  = 0
 
-    for i, (_, muni) in enumerate(municipalities.iterrows()):
-        if progress_bar is not None:
-            progress_bar.progress(i / total)
-        if progress_text_slot is not None:
-            progress_text_slot.text(
-                f"🏥 Consultando CNES: {muni.get('nome', '')} — {i+1}/{total}"
-            )
-
-        co_municipio = municipality_ibge_to_cnes_code(str(muni.get("codigo_ibge", "")))
-        if not co_municipio:
-            continue
-
-        raw_establishments = _fetch_cnes_municipality(co_municipio)
-
-        for est in raw_establishments:
-            normalized = _normalize_establishment(est, muni)
-
-            if only_relevant:
-                tp = normalized.get("tp_unidade", 0)
-                if tp not in HIGH_COST_RELEVANT_TYPES:
-                    continue
-
-            all_rows.append(normalized)
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        futures = {ex.submit(_worker, (row, only_relevant)): row
+                   for _, row in municipalities.iterrows()}
+        for fut in as_completed(futures):
+            done += 1
+            if progress_bar:   progress_bar.progress(done / total)
+            if progress_text_slot:
+                progress_text_slot.text(f"🏥 CNES: {done}/{total} municípios")
+            try:
+                all_rows.extend(fut.result())
+            except Exception:
+                pass
 
     if not all_rows:
         return pd.DataFrame()
 
     df = pd.DataFrame(all_rows)
-
-    # Calcula score de potencial
     df["score_potencial"] = df.apply(_calc_score, axis=1)
-
-    # Remove estabelecimentos sem coordenadas válidas (não aparecem no mapa)
     df = df.dropna(subset=["latitude", "longitude"])
+    df = df.sort_values("score_potencial", ascending=False).reset_index(drop=True)
 
-    return df.sort_values("score_potencial", ascending=False).reset_index(drop=True)
+    # ── Telefone Google: só para alto potencial (score ≥ 40) sem tel CNES ─────
+    alto = df["score_potencial"] >= 40
+    sem_tel = df["nu_telefone_cnes"].str.strip().eq("") | df["nu_telefone_cnes"].isna()
+    targets = df.index[alto | sem_tel].tolist()
+
+    if targets and progress_text_slot:
+        progress_text_slot.text(f"📞 Buscando telefones no Google para {len(targets)} estabelecimentos…")
+
+    def _phone_worker(idx):
+        row = df.loc[idx]
+        return idx, _get_google_phone(row.get("no_razao_social",""), row.get("municipio_nome",""))
+
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        for idx, phone in ex.map(_phone_worker, targets):
+            df.at[idx, "nu_telefone_google"] = phone
+
+    return df
 
 
 # ── Estatísticas resumidas ────────────────────────────────────────────────────

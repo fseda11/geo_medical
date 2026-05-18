@@ -99,15 +99,6 @@ with st.sidebar:
     min_score = st.slider("Score mínimo de potencial", 0, 80, 0, 5)
 
     st.markdown("---")
-    st.markdown("### 🗺️ Visualização")
-
-    draw_routes = st.number_input(
-        "Rotas no mapa (Google Directions)",
-        min_value=0, max_value=500, value=10, step=5,
-        help="0 = desativa. Cada rota usa 1 chamada Directions API (cacheada 1h).",
-    )
-
-    st.markdown("---")
 
     search_btn = st.button(
         "🚀 Buscar estabelecimentos",
@@ -223,7 +214,7 @@ if search_btn:
             municipalities=municipalities,
             establishments=establishments,
             max_km=distance_km,
-            draw_routes_to=draw_routes,
+            draw_routes_to=999,  # traça rotas para todos os municípios (cacheadas)
         )
 
     # Salva na sessão
@@ -254,162 +245,97 @@ if st.session_state.result_map is not None:
         col.metric(label, f"{val:,}")
 
     st.markdown("---")
+    st.markdown("---")
 
-    # ── Mapa full-width ────────────────────────────────────────────────────────
+    # ── Mapa full-width ──────────────────────────────────────────────────────
     st.markdown("#### 🗺️ Mapa de cobertura")
-    st.caption("💡 Use o controle de camadas ▶ (canto superior direito) para adicionar hospitais, clínicas, farmácias etc.")
-    st_folium(
-        st.session_state.result_map,
-        use_container_width=True,
-        height=640,
-        returned_objects=[],
-    )
+    st.caption("💡 Controle de camadas ▶ (canto superior direito) para ativar hospitais, clínicas, farmácias etc.")
+    st_folium(st.session_state.result_map, use_container_width=True,
+              height=640, returned_objects=[])
 
     st.markdown("---")
 
-    # ── Tabela única: Score + CNES + Export ────────────────────────────────────
+    # ── Tabela única ──────────────────────────────────────────────────────────
     if not establishments.empty:
-        RENAME_FULL = {
-            "score_potencial":   "⭐ Score",
-            "co_cnes":           "Cód. CNES",
-            "co_cnpj":           "CNPJ",
-            "no_razao_social":   "Razão Social",
-            "no_fantasia":       "Nome Fantasia",
-            "ds_tipo_unidade":   "Tipo",
-            "no_logradouro":     "Endereço",
-            "nu_endereco":       "Número",
-            "no_bairro":         "Bairro",
-            "co_cep":            "CEP",
-            "municipio_nome":    "Município",
-            "uf":                "UF",
-            "road_km":           "Dist. (km)",
-            "duration_text":     "Tempo",
-            "nu_telefone":       "Telefone",
-            "no_email":          "E-mail",
-            "tp_pfpj":           "Natureza",
-            "tp_gestao":         "Gestão",
-            "turno_atendimento": "Turno",
-            "atend_sus":         "Atend. SUS",
-            "tem_cirurgia":      "Ctr. Cirúrgico",
-            "tem_obstetrico":    "Ctr. Obstétrico",
-            "dt_atualizacao":    "Atualização",
+        RENAME = {
+            "score_potencial":    "⭐ Score",
+            "co_cnes":            "Cód. CNES",
+            "co_cnpj":            "CNPJ",
+            "no_razao_social":    "Razão Social",
+            "no_fantasia":        "Nome Fantasia",
+            "ds_tipo_unidade":    "Tipo",
+            "municipio_nome":     "Município",
+            "uf":                 "UF",
+            "no_logradouro":      "Endereço",
+            "nu_endereco":        "Número",
+            "no_bairro":          "Bairro",
+            "co_cep":             "CEP",
+            "road_km":            "Dist. (km)",
+            "duration_text":      "Tempo",
+            "nu_telefone_cnes":   "Telefone (CNES)",
+            "nu_telefone_google": "Telefone (Google)",
+            "no_email":           "E-mail",
+            "tp_gestao":          "Gestão",
+            "natureza_juridica":  "Natureza Jurídica",
+            "turno_atendimento":  "Turno",
+            "atend_sus":          "Atend. SUS",
+            "tem_cirurgia":       "Ctr. Cirúrgico",
+            "tem_obstetrico":     "Ctr. Obstétrico",
+            "dt_atualizacao":     "Atualização",
         }
-        _drop = ["latitude", "longitude", "category", "tp_unidade",
-                 "qt_leito_internacao", "qt_leito_sus", "atend_ambulatorial"]
+        _drop = ["latitude","longitude","category","tp_unidade","tp_pfpj",
+                 "qt_leito_internacao","qt_leito_sus","atend_ambulatorial","nu_telefone"]
 
-        # Controles: busca + export na mesma linha
-        col_search, col_xlsx, col_csv = st.columns([3, 1, 1])
-        with col_search:
-            search_term = st.text_input("🔎 Filtrar por nome…", key="tab_search")
+        c1, c2, c3 = st.columns([3, 1, 1])
+        with c1:
+            q = st.text_input("🔎 Filtrar por nome…", key="tab_search")
+        df_f = establishments
+        if q:
+            df_f = df_f[df_f["no_razao_social"].str.contains(q, case=False, na=False)]
 
-        df_filtered = establishments
-        if search_term:
-            df_filtered = df_filtered[
-                df_filtered["no_razao_social"].str.contains(search_term, case=False, na=False)
-            ]
+        df_d = df_f.drop(columns=_drop, errors="ignore")
+        df_d = df_d.rename(columns={k:v for k,v in RENAME.items() if k in df_d.columns})
 
-        df_disp = df_filtered.drop(columns=_drop, errors="ignore")
-        df_disp = df_disp.rename(columns={k: v for k, v in RENAME_FULL.items() if k in df_disp.columns})
+        slug = origin.get("formatted_address","busca").split(",")[0].strip().replace(" ","_").lower()
 
-        city_slug = (
-            origin.get("formatted_address", "busca")
-            .split(",")[0].strip().replace(" ", "_").lower()
-        )
-
-        with col_xlsx:
+        with c2:
             try:
                 buf = io.BytesIO()
-                with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-                    df_filtered.drop(columns=_drop, errors="ignore").to_excel(
-                        writer, sheet_name="Estabelecimentos", index=False)
+                with pd.ExcelWriter(buf, engine="openpyxl") as w:
+                    df_d.to_excel(w, sheet_name="Estabelecimentos", index=False)
                     if municipalities is not None:
-                        municipalities.to_excel(writer, sheet_name="Municípios", index=False)
+                        municipalities.to_excel(w, sheet_name="Municípios", index=False)
                 buf.seek(0)
                 st.download_button("⬇️ Excel", data=buf,
-                    file_name=f"health_route_{city_slug}_{distance_km}km.xlsx",
+                    file_name=f"health_route_{slug}_{distance_km}km.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True)
             except Exception:
-                st.warning("openpyxl não disponível")
-
-        with col_csv:
+                st.warning("Instale openpyxl")
+        with c3:
             st.download_button("⬇️ CSV",
-                data=df_filtered.drop(columns=_drop, errors="ignore").to_csv(index=False).encode("utf-8"),
-                file_name=f"health_route_{city_slug}_{distance_km}km.csv",
+                data=df_d.to_csv(index=False).encode("utf-8"),
+                file_name=f"health_route_{slug}_{distance_km}km.csv",
                 mime="text/csv", use_container_width=True)
 
-        st.dataframe(
-            df_disp,
-            use_container_width=True,
-            height=500,
+        st.dataframe(df_d, use_container_width=True, height=520, hide_index=True,
             column_config={
-                "⭐ Score": st.column_config.ProgressColumn(
-                    "⭐ Score", min_value=0, max_value=100, format="%d"),
-                "Dist. (km)": st.column_config.NumberColumn(format="%.0f km"),
-            },
-        )
-        st.caption(f"{len(df_filtered):,} estabelecimento(s) exibido(s) de {len(establishments):,} total.")
-
+                "⭐ Score": st.column_config.ProgressColumn("⭐ Score", min_value=0, max_value=100, format="%d"),
+                "Dist. (km)": st.column_config.NumberColumn(format="%.1f km"),
+            })
+        st.caption(f"{len(df_f):,} estabelecimento(s) exibidos · {len(establishments):,} total")
     else:
         st.info("Nenhum estabelecimento após aplicar os filtros.")
 
-    # ── Aba municípios ─────────────────────────────────────────────────────────
     st.markdown("---")
     with st.expander("🏙️ Municípios na rota", expanded=False):
         if municipalities is not None and not municipalities.empty:
-            _col_map = {
-                "nome": "Município", "uf": "UF", "estado": "Estado",
-                "road_km": "Dist. (km)", "duration_text": "Tempo estimado",
-                "straight_km": "Dist. linear (km)",
-            }
-            _existing = [c for c in _col_map if c in municipalities.columns]
-            st.dataframe(municipalities[_existing].rename(columns=_col_map),
-                         use_container_width=True, height=350)
-            st.caption(f"{len(municipalities)} município(s) em até {distance_km} km por rodovias.")
+            _cm = {"nome":"Município","uf":"UF","estado":"Estado","road_km":"Dist. (km)","duration_text":"Tempo"}
+            _ex = [c for c in _cm if c in municipalities.columns]
+            st.dataframe(municipalities[_ex].rename(columns=_cm).reset_index(drop=True),
+                         use_container_width=True, height=350, hide_index=True)
+            st.caption(f"{len(municipalities)} municípios · {distance_km} km por rodovias")
 
-            st.markdown(
-                f"""
-                **Resumo do arquivo:**
-                - {summary.get('total', 0):,} estabelecimentos
-                - {summary.get('municipios', 0)} municípios
-                - Origem: {origin.get('formatted_address', '')}
-                - Raio rodoviário: {distance_km} km
-                """
-            )
-
-else:
-    # Estado inicial — tela de boas-vindas
-    st.info(
-        "👈 **Configure a busca** na barra lateral e clique em **Buscar estabelecimentos** para começar.",
-        icon="🗺️",
-    )
-
-    st.markdown(
-        """
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:20px">
-          <div style="background:#E3F2FD;padding:20px;border-radius:10px;border-left:4px solid #1565C0">
-            <h4 style="margin:0;color:#1565C0">🛣️ Rotas reais</h4>
-            <p style="margin:8px 0 0;color:#555;font-size:14px">
-              Distâncias calculadas por Google Distance Matrix — rodovias reais, não raio simples.
-            </p>
-          </div>
-          <div style="background:#E8F5E9;padding:20px;border-radius:10px;border-left:4px solid #2E7D32">
-            <h4 style="margin:0;color:#2E7D32">🏥 Dados CNES/DATASUS</h4>
-            <p style="margin:8px 0 0;color:#555;font-size:14px">
-              Todos os estabelecimentos públicos registrados, com leitos SUS e tipo de gestão.
-            </p>
-          </div>
-          <div style="background:#FFF3E0;padding:20px;border-radius:10px;border-left:4px solid #E65100">
-            <h4 style="margin:0;color:#E65100">⭐ Score de potencial</h4>
-            <p style="margin:8px 0 0;color:#555;font-size:14px">
-              Algoritmo de scoring prioriza estabelecimentos com maior potencial de consumo
-              de medicamentos de alto custo.
-            </p>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
 
 # ── Rodapé ────────────────────────────────────────────────────────────────────
 st.markdown(
