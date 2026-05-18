@@ -4,7 +4,15 @@ Configurações centrais da aplicação Health Route Intelligence
 
 # ── API Keys ──────────────────────────────────────────────────────────────────
 # Chave "Google Maps API" (mais completa) — usada em produção
-GOOGLE_API_KEY = "AIzaSyCeOcS2Cnz7p5iPhFw3SK2dtQ9aGgqSR3A"
+import streamlit as st
+
+def _get_api_key() -> str:
+    try:
+        return st.secrets["google"]["GOOGLE_API_KEY"]
+    except Exception:
+        return "AIzaSyCeOcS2Cnz7p5iPhFw3SK2dtQ9aGgqSR3A"  # fallback local
+
+GOOGLE_API_KEY = _get_api_key()
 
 # ── URLs de APIs externas ─────────────────────────────────────────────────────
 GMAPS_GEOCODE_URL       = "https://maps.googleapis.com/maps/api/geocode/json"
@@ -24,7 +32,7 @@ DEFAULT_DISTANCE_KM     = 150
 STRAIGHT_LINE_FACTOR    = 1.6   # buffer straight-line para compensar desvios de estrada
 ROUTE_SAMPLE_INTERVAL   = 10    # km entre pontos amostrados na rota visual
 DISTANCE_MATRIX_BATCH   = 25    # máx destinos por chamada Distance Matrix
-CNES_PAGE_SIZE          = 20    # registros por página CNES
+CNES_PAGE_SIZE          = 50    # registros por página CNES
 
 # ── Classificação de unidades CNES ────────────────────────────────────────────
 UNIT_TYPES = {
