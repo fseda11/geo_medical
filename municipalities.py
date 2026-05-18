@@ -8,9 +8,10 @@ municipalities.py — Dados de municípios + filtragem por distância rodoviári
 
 import math
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
+import polyline as polyline_lib
 import requests
 import streamlit as st
 
@@ -139,13 +140,23 @@ def _batch_road_distances(
     df["duration_text"] = None
 
     total_batches = math.ceil(len(df) / DISTANCE_MATRIX_BATCH)
+    use_osrm = False
+
     for batch_num, batch_start in enumerate(range(0, len(df), DISTANCE_MATRIX_BATCH)):
         batch_df = df.iloc[batch_start: batch_start + DISTANCE_MATRIX_BATCH]
 
         if progress_bar is not None:
             progress_bar.progress(batch_num / total_batches)
         if progress_text_slot is not None:
-            progress_text_slot.text(f"🛣️ Calculando distâncias… lote {batch_num+1}/{total_batches}")
+            source = "OSRM" if use_osrm else "Google Routes"
+            progress_text_slot.text(
+                f"🛣️ [{source}] Calculando distâncias… lote {batch_num+1}/{total_batches}"
+            )
+
+        if use_osrm:
+            _fill_batch_osrm(origin_lat, origin_lng, df, batch_start, batch_df)
+            time.sleep(0.2)
+            continue
 
         # ── Tenta Google Distance Matrix API (clássica) ───────────────────────
         params = {
@@ -163,8 +174,7 @@ def _batch_road_distances(
         try:
             resp = requests.get(GMAPS_DISTANCE_URL, params=params, timeout=20)
             data = resp.json()
-            status = data.get("status")
-            if status == "OK":
+            if data.get("status") == "OK":
                 elements = data["rows"][0]["elements"]
                 for j, elem in enumerate(elements):
                     global_idx = batch_start + j
@@ -178,24 +188,92 @@ def _batch_road_distances(
                             f"{h}h {m}min" if h else f"{m}min"
                         )
                 google_ok = True
-            else:
-                # Mostra o motivo real da falha (REQUEST_DENIED, INVALID_KEY, etc.)
-                st.warning(
-                    f"⚠️ Google Distance Matrix lote {batch_num+1}: "
-                    f"status={status} | {data.get('error_message','')}"
-                )
-        except Exception as e:
-            st.warning(f"⚠️ Google Distance Matrix lote {batch_num+1} exception: {e}")
+        except Exception:
+            pass
 
         if not google_ok:
-            # Fallback apenas para ESTE lote — próximo lote tenta Google novamente
+            use_osrm = True
+            st.info("ℹ️ Google Routes API indisponível — usando OSRM (gratuito) para calcular distâncias rodoviárias.")
             _fill_batch_osrm(origin_lat, origin_lng, df, batch_start, batch_df)
             time.sleep(0.2)
         else:
-            time.sleep(0.05)
+            time.sleep(0.08)
 
     return df
 
+
+
+# ── Filtro de corredor rodoviário ──────────────────────────────────────────────
+
+def _get_route_polyline(origin_lat, origin_lng, dest_lat, dest_lng, api_key):
+    """Retorna lista de (lat, lng) para uma rota via Google Directions."""
+    from config import GMAPS_DIRECTIONS_URL
+    params = {
+        "origin":      f"{origin_lat},{origin_lng}",
+        "destination": f"{dest_lat},{dest_lng}",
+        "mode":        "driving",
+        "key":         api_key,
+    }
+    try:
+        resp = requests.get(GMAPS_DIRECTIONS_URL, params=params, timeout=15)
+        data = resp.json()
+        if data.get("status") == "OK" and data.get("routes"):
+            encoded = data["routes"][0]["overview_polyline"]["points"]
+            return polyline_lib.decode(encoded)
+    except Exception:
+        pass
+    return []
+
+
+def _point_to_polyline_dist_km(lat, lng, polyline_points):
+    """Distância mínima em km de um ponto a qualquer segmento da polyline."""
+    min_d = float("inf")
+    for plat, plng in polyline_points:
+        d = haversine_km(lat, lng, plat, plng)
+        if d < min_d:
+            min_d = d
+    return min_d
+
+
+def filter_by_route_corridor(
+    municipalities: pd.DataFrame,
+    origin_lat: float,
+    origin_lng: float,
+    corridor_km: float,
+    api_key: str,
+    sample_every_n: int = 5,
+) -> pd.DataFrame:
+    """
+    Mantém apenas municípios dentro de corridor_km de distância das polylines
+    das rotas principais. Amostra 1 a cada sample_every_n municípios para
+    construir o corredor sem explodir chamadas à API.
+    """
+    if municipalities.empty:
+        return municipalities
+
+    # Pega rotas para os municípios ordenados por road_km (principais corredores)
+    all_points: List[Tuple[float, float]] = []
+    sample = municipalities.iloc[::sample_every_n]  # amostra
+
+    for _, muni in sample.iterrows():
+        pts = _get_route_polyline(
+            origin_lat, origin_lng,
+            muni["latitude"], muni["longitude"],
+            api_key,
+        )
+        all_points.extend(pts)
+
+    if not all_points:
+        return municipalities  # sem polylines → retorna tudo
+
+    # Filtra municípios por distância ao corredor
+    def is_in_corridor(row):
+        d = _point_to_polyline_dist_km(row["latitude"], row["longitude"], all_points)
+        return d <= corridor_km
+
+    mask = municipalities.apply(is_in_corridor, axis=1)
+    filtered = municipalities[mask].copy()
+    return filtered if not filtered.empty else municipalities
 
 # ── Ponto de entrada principal ────────────────────────────────────────────────
 
@@ -235,6 +313,18 @@ def get_reachable_municipalities(
     ].copy()
 
     reachable = reachable.sort_values("road_km").reset_index(drop=True)
+
+    # ── Filtro de corredor (só municípios próximos às estradas percorridas) ────
+    if len(reachable) > 0 and api_key:
+        if progress_text_slot is not None:
+            progress_text_slot.text("🛣️ Aplicando filtro de corredor rodoviário…")
+        reachable = filter_by_route_corridor(
+            reachable, origin_lat, origin_lng,
+            corridor_km=25,   # municípios até 25km das rodovias principais
+            api_key=api_key,
+            sample_every_n=4,
+        )
+
     return reachable
 
 

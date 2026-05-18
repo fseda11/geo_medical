@@ -4,15 +4,7 @@ Configurações centrais da aplicação Health Route Intelligence
 
 # ── API Keys ──────────────────────────────────────────────────────────────────
 # Chave "Google Maps API" (mais completa) — usada em produção
-import streamlit as st
-
-def _get_api_key() -> str:
-    try:
-        return st.secrets["google"]["GOOGLE_API_KEY"]
-    except Exception:
-        return "AIzaSyCeOcS2Cnz7p5iPhFw3SK2dtQ9aGgqSR3A"  # fallback local
-
-GOOGLE_API_KEY = _get_api_key()
+GOOGLE_API_KEY = "AIzaSyCeOcS2Cnz7p5iPhFw3SK2dtQ9aGgqSR3A"
 
 # ── URLs de APIs externas ─────────────────────────────────────────────────────
 GMAPS_GEOCODE_URL       = "https://maps.googleapis.com/maps/api/geocode/json"
@@ -60,7 +52,7 @@ HIGH_COST_RELEVANT_TYPES = {5, 7, 15, 36, 39, 50, 20, 21, 65, 43}
 CATEGORY_MAP = {
     5:  "hospital",  7:  "hospital", 15: "hospital", 50: "hospital",
     20: "upa",       21: "upa",      39: "upa",       65: "upa",
-    36: "clinica",   4:  "clinica",  22: "clinica",
+    36: "clinica",   4:  "clinica",
     43: "farmacia",
     1:  "ubs",       2:  "ubs",      71: "ubs",
 }
