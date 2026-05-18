@@ -7,6 +7,7 @@ cnes.py — Integração com a API pública do DATASUS/CNES
 """
 
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -26,6 +27,7 @@ from municipalities import municipality_ibge_to_cnes_code
 
 # ── Busca paginada por município ──────────────────────────────────────────────
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def _fetch_cnes_municipality(co_municipio: str) -> List[Dict]:
     """
     Baixa todos os estabelecimentos de um município via CNES API.
@@ -48,22 +50,20 @@ def _fetch_cnes_municipality(co_municipio: str) -> List[Dict]:
                 break
             data = resp.json()
             items = data.get("estabelecimentos", [])
-            if not items:          # última página — para apenas quando a API retorna []
+            if not items:
                 break
             all_items.extend(items)
-            time.sleep(0.05)
+            time.sleep(0.03)
         except Exception:
             break
 
-    # Remove duplicatas que podem surgir se a API retornar sobreposição entre páginas
-    seen = set()
-    unique = []
+    # Deduplica por codigo_cnes
+    seen, unique = set(), []
     for item in all_items:
-        key = item.get("codigo_cnes")
-        if key and key in seen:
-            continue
-        seen.add(key)
-        unique.append(item)
+        k = item.get("codigo_cnes")
+        if k not in seen:
+            seen.add(k)
+            unique.append(item)
     return unique
 
 
@@ -181,6 +181,21 @@ def _safe_int(val) -> Optional[int]:
 
 # ── Ponto de entrada principal ────────────────────────────────────────────────
 
+def _fetch_and_normalize(args):
+    """Worker para paralelização: busca + normaliza 1 município."""
+    muni, only_relevant = args
+    co_municipio = municipality_ibge_to_cnes_code(str(muni.get("codigo_ibge", "")))
+    if not co_municipio or co_municipio == "nan":
+        return []
+    rows = []
+    for est in _fetch_cnes_municipality(co_municipio):
+        normalized = _normalize_establishment(est, muni)
+        if only_relevant and normalized.get("tp_unidade", 0) not in HIGH_COST_RELEVANT_TYPES:
+            continue
+        rows.append(normalized)
+    return rows
+
+
 def get_establishments_for_municipalities(
     municipalities: pd.DataFrame,
     only_relevant: bool = False,
@@ -188,50 +203,34 @@ def get_establishments_for_municipalities(
     progress_text_slot=None,
 ) -> pd.DataFrame:
     """
-    Consulta o CNES para todos os municípios do DataFrame.
-    Retorna DataFrame consolidado com score de potencial calculado.
-
-    Parâmetros:
-      only_relevant: se True, retorna apenas tipos relevantes para alto custo
+    Consulta o CNES em paralelo (5 workers) para todos os municípios.
+    Cache por município evita re-requisições em buscas repetidas.
     """
     all_rows: List[Dict] = []
     total = len(municipalities)
+    done = 0
 
-    for i, (_, muni) in enumerate(municipalities.iterrows()):
-        if progress_bar is not None:
-            progress_bar.progress(i / total)
-        if progress_text_slot is not None:
-            progress_text_slot.text(
-                f"🏥 Consultando CNES: {muni.get('nome', '')} — {i+1}/{total}"
-            )
+    muni_list = [(row, only_relevant) for _, row in municipalities.iterrows()]
 
-        co_municipio = municipality_ibge_to_cnes_code(str(muni.get("codigo_ibge", "")))
-        if not co_municipio:
-            continue
-
-        raw_establishments = _fetch_cnes_municipality(co_municipio)
-
-        for est in raw_establishments:
-            normalized = _normalize_establishment(est, muni)
-
-            if only_relevant:
-                tp = normalized.get("tp_unidade", 0)
-                if tp not in HIGH_COST_RELEVANT_TYPES:
-                    continue
-
-            all_rows.append(normalized)
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(_fetch_and_normalize, args): args for args in muni_list}
+        for future in as_completed(futures):
+            done += 1
+            if progress_bar is not None:
+                progress_bar.progress(done / total)
+            if progress_text_slot is not None:
+                progress_text_slot.text(f"🏥 CNES: {done}/{total} municípios consultados")
+            try:
+                all_rows.extend(future.result())
+            except Exception:
+                pass
 
     if not all_rows:
         return pd.DataFrame()
 
     df = pd.DataFrame(all_rows)
-
-    # Calcula score de potencial
     df["score_potencial"] = df.apply(_calc_score, axis=1)
-
-    # Remove estabelecimentos sem coordenadas válidas (não aparecem no mapa)
     df = df.dropna(subset=["latitude", "longitude"])
-
     return df.sort_values("score_potencial", ascending=False).reset_index(drop=True)
 
 

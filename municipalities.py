@@ -139,23 +139,13 @@ def _batch_road_distances(
     df["duration_text"] = None
 
     total_batches = math.ceil(len(df) / DISTANCE_MATRIX_BATCH)
-    use_osrm = False
-
     for batch_num, batch_start in enumerate(range(0, len(df), DISTANCE_MATRIX_BATCH)):
         batch_df = df.iloc[batch_start: batch_start + DISTANCE_MATRIX_BATCH]
 
         if progress_bar is not None:
             progress_bar.progress(batch_num / total_batches)
         if progress_text_slot is not None:
-            source = "OSRM" if use_osrm else "Google Routes"
-            progress_text_slot.text(
-                f"🛣️ [{source}] Calculando distâncias… lote {batch_num+1}/{total_batches}"
-            )
-
-        if use_osrm:
-            _fill_batch_osrm(origin_lat, origin_lng, df, batch_start, batch_df)
-            time.sleep(0.2)
-            continue
+            progress_text_slot.text(f"🛣️ Calculando distâncias… lote {batch_num+1}/{total_batches}")
 
         # ── Tenta Google Distance Matrix API (clássica) ───────────────────────
         params = {
@@ -173,7 +163,8 @@ def _batch_road_distances(
         try:
             resp = requests.get(GMAPS_DISTANCE_URL, params=params, timeout=20)
             data = resp.json()
-            if data.get("status") == "OK":
+            status = data.get("status")
+            if status == "OK":
                 elements = data["rows"][0]["elements"]
                 for j, elem in enumerate(elements):
                     global_idx = batch_start + j
@@ -187,16 +178,21 @@ def _batch_road_distances(
                             f"{h}h {m}min" if h else f"{m}min"
                         )
                 google_ok = True
-        except Exception:
-            pass
+            else:
+                # Mostra o motivo real da falha (REQUEST_DENIED, INVALID_KEY, etc.)
+                st.warning(
+                    f"⚠️ Google Distance Matrix lote {batch_num+1}: "
+                    f"status={status} | {data.get('error_message','')}"
+                )
+        except Exception as e:
+            st.warning(f"⚠️ Google Distance Matrix lote {batch_num+1} exception: {e}")
 
         if not google_ok:
-            use_osrm = True
-            st.info("ℹ️ Google Routes API indisponível — usando OSRM (gratuito) para calcular distâncias rodoviárias.")
+            # Fallback apenas para ESTE lote — próximo lote tenta Google novamente
             _fill_batch_osrm(origin_lat, origin_lng, df, batch_start, batch_df)
             time.sleep(0.2)
         else:
-            time.sleep(0.08)
+            time.sleep(0.05)
 
     return df
 

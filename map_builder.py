@@ -32,47 +32,25 @@ def _popup_html(est: dict) -> str:
     icon = CATEGORY_ICONS.get(est.get("category", "outro"), "🏢")
     score = est.get("score_potencial", 0)
     score_color = "#4CAF50" if score >= 60 else "#FF9800" if score >= 35 else "#9E9E9E"
-
-    leitos     = est.get("qt_leito_internacao") or "—"
-    leitos_sus = est.get("qt_leito_sus") or "—"
-    telefone   = est.get("nu_telefone") or "—"
-    gestao     = est.get("tp_pfpj") or "—"
-    duration   = est.get("duration_text") or "—"
-
+    telefone = est.get("nu_telefone") or "—"
     return f"""
-    <div style="font-family:Arial,sans-serif;min-width:240px;max-width:280px">
-      <div style="background:#263238;color:#fff;padding:8px 12px;border-radius:6px 6px 0 0;
-                  font-size:13px;font-weight:bold">
-        {icon} {est.get("no_razao_social") or "Estabelecimento"}
+    <div style="font-family:Arial,sans-serif;min-width:220px;max-width:260px">
+      <div style="background:#1565C0;color:#fff;padding:7px 11px;
+                  border-radius:6px 6px 0 0;font-size:13px;font-weight:bold">
+        {icon} {(est.get("no_razao_social") or "Estabelecimento")[:40]}
       </div>
-      <div style="padding:10px 12px;border:1px solid #eee;border-radius:0 0 6px 6px">
-        <p style="margin:0 0 4px;color:#666;font-size:11px">
-          {est.get("ds_tipo_unidade","—")}
-        </p>
-        <hr style="margin:6px 0;border-color:#eee">
-        <table style="width:100%;font-size:12px;border-collapse:collapse">
-          <tr><td style="color:#888;padding:2px 0">CNES</td>
-              <td style="font-weight:bold">{est.get("co_cnes","—")}</td></tr>
-          <tr><td style="color:#888;padding:2px 0">Município</td>
-              <td>{est.get("municipio_nome","—")} / {est.get("uf","—")}</td></tr>
-          <tr><td style="color:#888;padding:2px 0">Distância</td>
-              <td>{est.get("road_km","—")} km ({duration})</td></tr>
-          <tr><td style="color:#888;padding:2px 0">Leitos</td>
-              <td>{leitos} total / {leitos_sus} SUS</td></tr>
-          <tr><td style="color:#888;padding:2px 0">Gestão</td>
-              <td>{gestao}</td></tr>
-          <tr><td style="color:#888;padding:2px 0">Telefone</td>
-              <td>{telefone}</td></tr>
-        </table>
-        <div style="margin-top:8px;text-align:right">
-          <span style="background:{score_color};color:#fff;padding:3px 8px;
-                       border-radius:12px;font-size:11px;font-weight:bold">
-            Potencial: {score}/100
-          </span>
+      <div style="padding:9px 11px;background:#fff;border-radius:0 0 6px 6px;
+                  border:1px solid #ddd;font-size:12px;color:#333">
+        <b>{est.get("ds_tipo_unidade","—")}</b><br>
+        📍 {est.get("municipio_nome","—")} · {est.get("road_km","—")} km<br>
+        📞 {telefone}<br>
+        🏛️ {est.get("tp_pfpj","—")} · {est.get("tp_gestao","—")}<br>
+        <div style="margin-top:6px;text-align:right">
+          <span style="background:{score_color};color:#fff;padding:2px 7px;
+                       border-radius:10px;font-size:11px">⭐ {score}/100</span>
         </div>
       </div>
-    </div>
-    """
+    </div>"""
 
 
 # ── Construção principal do mapa ──────────────────────────────────────────────
@@ -191,7 +169,7 @@ def build_map(
 
             cluster = MarkerCluster(
                 name=cat_label,
-                show=True,
+                show=False,  # desligado por default — usuário ativa no controle de camadas
                 options={
                     "spiderfyOnMaxZoom": True,
                     "showCoverageOnHover": False,
@@ -270,6 +248,6 @@ def build_map(
 
     # ── Mini-mapa e controle de camadas ───────────────────────────────────────
     MiniMap(toggle_display=True, tile_layer="CartoDB positron").add_to(m)
-    folium.LayerControl(collapsed=False).add_to(m)
+    folium.LayerControl(collapsed=True, position='topright').add_to(m)
 
     return m
