@@ -24,6 +24,80 @@ from config import (
 from municipalities import municipality_ibge_to_cnes_code
 
 
+# ── Dicionários de decodificação CNES ─────────────────────────────────────────
+
+GESTAO_LABELS = {
+    "M": "Municipal",
+    "E": "Estadual",
+    "S": "Sem gestão (Privado)",
+    "D": "Dupla (Municipal + Estadual)",
+}
+
+NATUREZA_JURIDICA_LABELS = {
+    # Administração Pública Federal
+    "1000": "Órgão Público Federal",
+    "1014": "Autarquia Federal",
+    "1023": "Empresa Pública Federal",
+    "1031": "Fundação Pública Federal",
+    # Administração Pública Estadual
+    "1040": "Órgão Público Estadual",
+    "1104": "Autarquia Estadual",
+    "1112": "Empresa Pública Estadual",
+    "1120": "Fundação Pública Estadual",
+    # Administração Pública Municipal
+    "1139": "Órgão Público Municipal",
+    "1147": "Autarquia Municipal",
+    "1155": "Empresa Pública Municipal",
+    "1163": "Fundação Pública Municipal",
+    # Economia Mista
+    "2011": "Econ. Mista Federal",
+    "2038": "Econ. Mista Estadual",
+    "2054": "Econ. Mista Municipal",
+    # Privado sem fins lucrativos
+    "3034": "Serviço Social Autônomo (SESI/SESC…)",
+    "3069": "Fundação Privada",
+    "3077": "Organização Religiosa",
+    "3085": "Entidade Sindical",
+    "3131": "Cooperativa",
+    "3999": "Associação Privada (ONG/OS/OSCIP)",
+    # Privado com fins lucrativos
+    "4000": "Empresa Privada",
+    "4030": "Soc. Empresária Ltda.",
+    "4041": "Soc. Anônima (S/A)",
+    "4090": "Cooperativa",
+    "4120": "Empresa Individual",
+    # Pessoa Física
+    "5010": "Empresário Individual (PF)",
+    "5069": "MEI",
+}
+
+def _decode_gestao(code: str) -> str:
+    return GESTAO_LABELS.get(str(code).strip().upper(), code or "—")
+
+def _decode_natureza(code) -> str:
+    s = str(code).strip() if code else ""
+    if s in NATUREZA_JURIDICA_LABELS:
+        return NATUREZA_JURIDICA_LABELS[s]
+    # Fallback por faixa
+    try:
+        n = int(s)
+        if 1000 <= n < 2000: return "Entidade Pública"
+        if 2000 <= n < 3000: return "Economia Mista"
+        if 3000 <= n < 4000: return "Privado Sem Fins Lucrativos"
+        if 4000 <= n < 5000: return "Empresa Privada"
+        if n >= 5000:        return "Pessoa Física / MEI"
+    except Exception:
+        pass
+    return s or "—"
+
+def _yn(val) -> str:
+    """Converte 0/1 ou True/False para Sim/Não."""
+    try:
+        return "Sim" if int(val) else "Não"
+    except Exception:
+        return "—"
+
+
 # ── Busca paginada por município ──────────────────────────────────────────────
 
 def _fetch_cnes_municipality(co_municipio: str) -> List[Dict]:
@@ -132,6 +206,9 @@ def _normalize_establishment(est: Dict, muni_row: pd.Series) -> Dict:
     natureza = "Público" if any(x in esfera for x in ("MUNICIPAL","ESTADUAL","FEDERAL"))                else ("Privado" if str(est.get("descricao_natureza_juridica_estabelecimento") or "").startswith("4")
                      else "Público/Filantrópico")
 
+    raw_gestao   = est.get("tipo_gestao", "")
+    raw_nat_code = est.get("descricao_natureza_juridica_estabelecimento", "")
+
     return {
         "co_cnes":             str(est.get("codigo_cnes") or ""),
         "co_cnpj":             str(est.get("numero_cnpj") or est.get("numero_cnpj_entidade") or ""),
@@ -154,14 +231,14 @@ def _normalize_establishment(est: Dict, muni_row: pd.Series) -> Dict:
         "no_email":            est.get("endereco_email_estabelecimento", ""),
         "qt_leito_internacao": leitos_proxy,
         "qt_leito_sus":        tem_internacao * 25,
-        "tem_cirurgia":        tem_cirurgia,
-        "tem_obstetrico":      tem_obstetrico,
-        "atend_ambulatorial":  int(est.get("estabelecimento_possui_atendimento_ambulatorial") or 0),
-        "atend_sus":           est.get("estabelecimento_faz_atendimento_ambulatorial_sus", ""),
-        "tp_gestao":           est.get("tipo_gestao", ""),
+        "tem_cirurgia":        _yn(tem_cirurgia),
+        "tem_obstetrico":      _yn(tem_obstetrico),
+        "atend_ambulatorial":  _yn(est.get("estabelecimento_possui_atendimento_ambulatorial") or 0),
+        "atend_sus":           "Sim" if str(est.get("estabelecimento_faz_atendimento_ambulatorial_sus","")).upper() == "SIM" else "Não",
+        "tp_gestao":           _decode_gestao(raw_gestao),
         "tp_pfpj":             natureza,
-        "ds_natureza_juridica": est.get("descricao_natureza_juridica_estabelecimento", ""),
-        "turno_atendimento":   est.get("descricao_turno_atendimento", ""),
+        "ds_natureza_juridica": _decode_natureza(raw_nat_code),
+        "turno_atendimento":   (est.get("descricao_turno_atendimento") or "").title(),
         "dt_atualizacao":      est.get("data_atualizacao", ""),
     }
 
@@ -244,9 +321,8 @@ def summarize_establishments(df: pd.DataFrame) -> Dict:
         "upas":             (df["category"] == "upa").sum(),
         "farmacias":        (df["category"] == "farmacia").sum(),
         "ubs":              (df["category"] == "ubs").sum(),
-        "outros":           (df["category"] == "outro").sum(),
         "total_leitos":     int(df["qt_leito_internacao"].sum()),
         "total_leitos_sus": int(df["qt_leito_sus"].sum()),
-        "alto_potencial":   (df["score_potencial"] >= 40).sum(),
+        "alto_potencial":   (df["score_potencial"] >= 30).sum(),
         "score_medio":      round(df["score_potencial"].mean(), 1),
     }
