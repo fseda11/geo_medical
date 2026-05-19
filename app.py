@@ -254,9 +254,36 @@ if st.session_state.result_map is not None:
 
     # ── Mapa full-width ──────────────────────────────────────────────────────
     st.markdown("#### 🗺️ Mapa de cobertura")
-    st.caption("💡 Controle de camadas ▶ (canto superior direito) para ativar hospitais, clínicas, farmácias etc.")
-    st_folium(st.session_state.result_map, use_container_width=True,
-              height=640, returned_objects=[])
+    _c1, _c2, _c3, _c4 = st.columns([2, 1, 1, 1])
+    with _c1:
+        st.caption("Filtrar por potencial:")
+    with _c2:
+        _fa = st.checkbox("🟢 Alto (≥ 60)",   value=True, key="fa")
+    with _c3:
+        _fm = st.checkbox("🟠 Médio (40–59)", value=True, key="fm")
+    with _c4:
+        _fb = st.checkbox("⚫ Baixo (< 40)",  value=True, key="fb")
+
+    _est_map = establishments.copy()
+    if not (_fa and _fm and _fb):
+        import functools, operator as _op
+        _mk = []
+        if _fa: _mk.append(_est_map["score_potencial"] >= 60)
+        if _fm: _mk.append((_est_map["score_potencial"] >= 40) & (_est_map["score_potencial"] < 60))
+        if _fb: _mk.append(_est_map["score_potencial"] < 40)
+        _est_map = _est_map[functools.reduce(_op.or_, _mk)] if _mk else _est_map.iloc[0:0]
+
+    with st.spinner("🗺️ Atualizando mapa…"):
+        from map_builder import build_map as _bm
+        _fmap_f = _bm(
+            origin=st.session_state.origin_data,
+            municipalities=st.session_state.result_munis,
+            establishments=_est_map,
+            max_km=distance_km,
+            draw_routes_to=999,
+        )
+    st.caption("💡 Controle de camadas ▶ (canto superior direito) para ativar/desativar categorias.")
+    st_folium(_fmap_f, use_container_width=True, height=640, returned_objects=[])
 
     st.markdown("---")
 
