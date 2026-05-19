@@ -106,17 +106,11 @@ with st.sidebar:
         use_container_width=True,
     )
 
-    if st.session_state.get("show_results", False):
-        if st.button("🏠 Tela inicial  (mantém pesquisa)", use_container_width=True):
-            st.session_state["show_results"] = False
-            st.rerun()
-
 # ── Estado da sessão ──────────────────────────────────────────────────────────
-if "result_map"   not in st.session_state: st.session_state.result_map   = None
-if "result_df"    not in st.session_state: st.session_state.result_df    = None
+if "result_map"  not in st.session_state: st.session_state.result_map  = None
+if "result_df"   not in st.session_state: st.session_state.result_df   = None
 if "result_munis" not in st.session_state: st.session_state.result_munis = None
-if "origin_data"  not in st.session_state: st.session_state.origin_data  = None
-if "show_results" not in st.session_state: st.session_state.show_results = False
+if "origin_data" not in st.session_state: st.session_state.origin_data = None
 
 # ── Lógica principal ──────────────────────────────────────────────────────────
 if search_btn:
@@ -228,10 +222,9 @@ if search_btn:
     st.session_state.result_df    = establishments
     st.session_state.result_munis = municipalities
     st.session_state.origin_data  = origin
-    st.session_state["show_results"] = True
 
 # ── Exibição dos resultados ───────────────────────────────────────────────────
-if st.session_state.result_map is not None and st.session_state.get("show_results", False):
+if st.session_state.result_map is not None:
     origin        = st.session_state.origin_data
     municipalities = st.session_state.result_munis
     establishments = st.session_state.result_df
@@ -261,36 +254,9 @@ if st.session_state.result_map is not None and st.session_state.get("show_result
 
     # ── Mapa full-width ──────────────────────────────────────────────────────
     st.markdown("#### 🗺️ Mapa de cobertura")
-    _c1, _c2, _c3, _c4 = st.columns([2, 1, 1, 1])
-    with _c1:
-        st.caption("Filtrar por potencial:")
-    with _c2:
-        _fa = st.checkbox("🟢 Alto (≥ 60)",   value=True, key="fa")
-    with _c3:
-        _fm = st.checkbox("🟠 Médio (40–59)", value=True, key="fm")
-    with _c4:
-        _fb = st.checkbox("⚫ Baixo (< 40)",  value=True, key="fb")
-
-    _est_map = establishments.copy()
-    if not (_fa and _fm and _fb):
-        import functools, operator as _op
-        _mk = []
-        if _fa: _mk.append(_est_map["score_potencial"] >= 60)
-        if _fm: _mk.append((_est_map["score_potencial"] >= 40) & (_est_map["score_potencial"] < 60))
-        if _fb: _mk.append(_est_map["score_potencial"] < 40)
-        _est_map = _est_map[functools.reduce(_op.or_, _mk)] if _mk else _est_map.iloc[0:0]
-
-    with st.spinner("🗺️ Atualizando mapa…"):
-        from map_builder import build_map as _bm
-        _fmap_f = _bm(
-            origin=st.session_state.origin_data,
-            municipalities=st.session_state.result_munis,
-            establishments=_est_map,
-            max_km=distance_km,
-            draw_routes_to=999,
-        )
-    st.caption("💡 Controle de camadas ▶ (canto superior direito) para ativar/desativar categorias.")
-    st_folium(_fmap_f, use_container_width=True, height=640, returned_objects=[])
+    st.caption("💡 Controle de camadas ▶ (canto superior direito) para ativar hospitais, clínicas, farmácias etc.")
+    st_folium(st.session_state.result_map, use_container_width=True,
+              height=640, returned_objects=[])
 
     st.markdown("---")
 
@@ -312,7 +278,7 @@ if st.session_state.result_map is not None and st.session_state.get("show_result
             "road_km":            "Dist. (km)",
             "duration_text":      "Tempo",
             "nu_telefone_cnes":   "Telefone (CNES)",
-            "nu_telefone_google": "Telefone (Google)",
+            "nu_telefone_google": "Tel. CNPJ / Google",
             "no_email":           "E-mail",
             "tp_gestao":          "Gestão",
             "natureza_juridica":  "Natureza Jurídica",
@@ -375,52 +341,6 @@ if st.session_state.result_map is not None and st.session_state.get("show_result
                          use_container_width=True, height=350, hide_index=True)
             st.caption(f"{len(municipalities)} municípios · {distance_km} km por rodovias")
 
-
-else:
-    has_prev = st.session_state.result_map is not None
-    if has_prev:
-        st.info("👈 Você tem uma pesquisa salva. Clique em **Buscar** para refazer ou em **Tela inicial** para ver os cards.", icon="💾")
-    else:
-        st.info("👈 **Configure a busca** na barra lateral e clique em **Buscar estabelecimentos**.", icon="🗺️")
-    st.markdown("""
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:20px">
-      <div style="background:#E3F2FD;padding:20px;border-radius:10px;border-left:4px solid #1565C0">
-        <h4 style="margin:0;color:#1565C0">🛣️ Rotas reais</h4>
-        <p style="margin:8px 0 0;color:#555;font-size:14px">Distâncias por Google Distance Matrix — rodovias reais, não raio simples. Filtro de corredor mantém só municípios ao longo das estradas.</p>
-      </div>
-      <div style="background:#E8F5E9;padding:20px;border-radius:10px;border-left:4px solid #2E7D32">
-        <h4 style="margin:0;color:#2E7D32">🏥 Dados CNES/DATASUS</h4>
-        <p style="margin:8px 0 0;color:#555;font-size:14px">Todos os estabelecimentos registrados: tipo, endereço, turno, gestão e natureza jurídica. Telefones via CNES e Google Places.</p>
-      </div>
-      <div style="background:#FFF3E0;padding:20px;border-radius:10px;border-left:4px solid #E65100">
-        <h4 style="margin:0;color:#E65100">⭐ Score de potencial</h4>
-        <p style="margin:8px 0 0;color:#555;font-size:14px">Algoritmo prioriza hospitais, farmácias e clínicas com maior potencial de consumo de medicamentos de alto custo.</p>
-      </div>
-    </div>""", unsafe_allow_html=True)
-    st.markdown("---")
-    with st.expander("📊 Como é calculado o Score de Potencial?", expanded=False):
-        st.markdown("""
-O score vai de **0 a 100 pontos** e estima o potencial de consumo de medicamentos de alto custo:
-
-| Fator | Critério | Pontos |
-|---|---|---|
-| **Tipo de unidade** | Hospital Geral / Especializado | 50 |
-| | Farmácia | 40 |
-| | UPA / Pronto-Socorro / Clínica de Especialidade | 30 |
-| | UBS / Posto de Saúde | 10 |
-| | Outros (consultórios, CAPS…) | 5 |
-| **Capacidade hospitalar** | Flags de internação + cirurgia + obstetrícia | até 30 |
-| **Serviços adicionais** | Centro cirúrgico, obstétrico, ambulatorial | até 10 |
-| **Gestão** | Estadual / Federal | +10 · Dupla +6 · Municipal +4 |
-
-**Interpretação:** 🟢 ≥ 60 Alto · 🟠 40–59 Médio · ⚫ < 40 Baixo
-
-> Score é indicador de priorização comercial, não de qualidade assistencial.
-        """)
-    if has_prev:
-        if st.button("📊 Ver resultados da última pesquisa", type="primary"):
-            st.session_state["show_results"] = True
-            st.rerun()
 
 # ── Rodapé ────────────────────────────────────────────────────────────────────
 st.markdown(

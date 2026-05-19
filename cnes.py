@@ -232,6 +232,16 @@ def _calc_score(row: pd.Series) -> int:
 
 # ── Enriquecimento e normalização ─────────────────────────────────────────────
 
+def _fmt_phone(raw: str) -> str:
+    """Formata número de telefone brasileiro: '2432831280' → '(24) 3283-1280'."""
+    digits = "".join(c for c in str(raw or "") if c.isdigit())
+    if len(digits) == 10:
+        return f"({digits[:2]}) {digits[2:6]}-{digits[6:]}"
+    if len(digits) == 11:
+        return f"({digits[:2]}) {digits[2:7]}-{digits[7:]}"
+    return str(raw or "").strip()
+
+
 def _normalize_establishment(est: Dict, muni_row: pd.Series) -> Dict:
     """
     Normaliza campos da API CNES — formato atual (nomes por extenso).
@@ -304,7 +314,7 @@ def _normalize_establishment(est: Dict, muni_row: pd.Series) -> Dict:
         "duration_text":        muni_row.get("duration_text", ""),
         "latitude":             lat,
         "longitude":            lng,
-        "nu_telefone_cnes":     est.get("numero_telefone_estabelecimento", "") or "",
+        "nu_telefone_cnes":     _fmt_phone(est.get("numero_telefone_estabelecimento", "")),
         "nu_telefone_google":   "",   # preenchido em pós-processamento
         "no_email":             est.get("endereco_email_estabelecimento", "") or "",
         "qt_leito_internacao":  leitos_proxy,
@@ -385,14 +395,18 @@ def get_establishments_for_municipalities(
 
     def _phone_worker(idx):
         row = df.loc[idx]
-        # Tenta CNPJ primeiro (Receita Federal, mais confiável)
+        phones = []
+        # 1. BrasilAPI/Receita Federal via CNPJ
         cnpj = str(row.get("co_cnpj") or "").strip()
-        phone = _get_phone_from_cnpj(cnpj) if cnpj else ""
-        # Fallback: Google Places
-        if not phone:
-            nome = (row.get("no_fantasia") or row.get("no_razao_social") or "").strip()
-            phone = _get_google_phone(nome, row.get("municipio_nome",""))
-        return idx, phone
+        if cnpj:
+            p = _get_phone_from_cnpj(cnpj)
+            if p: phones.append(p)
+        # 2. Google Places
+        nome = (row.get("no_fantasia") or row.get("no_razao_social") or "").strip()
+        if nome:
+            p = _get_google_phone(nome, row.get("municipio_nome",""))
+            if p and p not in phones: phones.append(p)
+        return idx, " / ".join(phones)
 
     with ThreadPoolExecutor(max_workers=20) as ex:
         for idx, phone in ex.map(_phone_worker, targets):
