@@ -86,42 +86,20 @@ def _yn_str(v: str) -> str:
 # ── Cache de telefones Google ──────────────────────────────────────────────────
 _google_phone_cache: Dict[str, str] = {}
 
-def _get_google_phone(name: str, city: str, category: str = "") -> str:
-    """
-    Busca telefone via Google Places em 2 passos:
-    1. textsearch → place_id (melhor busca por nome comercial)
-    2. place/details → formatted_phone_number
-    """
+def _get_google_phone(name: str, city: str) -> str:
     key = f"{name}|{city}"
     if key in _google_phone_cache:
         return _google_phone_cache[key]
-    phone = ""
     try:
-        # Passo 1: Text Search para achar o lugar por nome + cidade
-        r1 = requests.get(
-            "https://maps.googleapis.com/maps/api/place/textsearch/json",
-            params={
-                "query": f"{name} {city}",
-                "region": "br",
-                "key": GOOGLE_API_KEY,
-            },
-            timeout=4,
-        )
-        results = r1.json().get("results", [])
-        place_id = results[0].get("place_id", "") if results else ""
-
-        if place_id:
-            # Passo 2: Place Details para pegar o telefone
-            r2 = requests.get(
-                "https://maps.googleapis.com/maps/api/place/details/json",
-                params={
-                    "place_id": place_id,
-                    "fields":   "formatted_phone_number",
-                    "key":      GOOGLE_API_KEY,
-                },
-                timeout=4,
-            )
-            phone = r2.json().get("result", {}).get("formatted_phone_number", "") or ""
+        url = "https://maps.googleapis.com/maps/api/place/findplacefromtext/json"
+        params = {
+            "input":     f"{name} {city} Brasil",
+            "inputtype": "textquery",
+            "fields":    "formatted_phone_number",
+            "key":       GOOGLE_API_KEY,
+        }
+        resp = requests.get(url, params=params, timeout=6)
+        phone = (resp.json().get("candidates") or [{}])[0].get("formatted_phone_number", "") or ""
     except Exception:
         phone = ""
     _google_phone_cache[key] = phone
@@ -240,17 +218,27 @@ def _normalize_establishment(est: Dict, muni_row: pd.Series) -> Dict:
     natureza = "Público" if any(x in esfera for x in ("MUNICIPAL","ESTADUAL","FEDERAL"))                else ("Privado" if str(est.get("descricao_natureza_juridica_estabelecimento") or "").startswith("4")
                      else "Público/Filantrópico")
 
-    uf = muni_row.get("uf") or muni_row.get("uf", "")
+    # UF: lê direto do muni_row; se vier NaN, faz lookup na tabela IBGE
+    import math as _math
+    _uf_raw = muni_row.get("uf")
+    if _uf_raw is not None and not (isinstance(_uf_raw, float) and _math.isnan(_uf_raw)):
+        uf = str(_uf_raw).strip().upper()
+    else:
+        uf = ""
     if not uf:
-        # fallback: estado é "Rio de Janeiro" → pega sigla via codigo_uf
         try:
             from municipalities import _load_municipalities_csv
-            ibge = str(muni_row.get("codigo_ibge",""))
-            _df = _load_municipalities_csv()
-            row = _df[_df["codigo_ibge"] == ibge]
-            uf = row["uf"].iloc[0] if not row.empty else ""
+            _ibge = str(muni_row.get("codigo_ibge", "")).strip()
+            _mdf  = _load_municipalities_csv()
+            _row  = _mdf[_mdf["codigo_ibge"] == _ibge]
+            if not _row.empty:
+                _v = _row["uf"].iloc[0]
+                uf = "" if (isinstance(_v, float) and _math.isnan(_v)) else str(_v).strip().upper()
         except Exception:
             uf = ""
+    # Último recurso: nome do estado
+    if not uf:
+        uf = ESTADO_TO_UF.get(str(muni_row.get("estado") or "").strip().upper(), "")
 
     return {
         "co_cnes":              str(est.get("codigo_cnes") or ""),
@@ -341,20 +329,19 @@ def get_establishments_for_municipalities(
     df = df.dropna(subset=["latitude", "longitude"])
     df = df.sort_values("score_potencial", ascending=False).reset_index(drop=True)
 
-    # ── Telefone Google: só para alto potencial (score ≥ 40) sem tel CNES ─────
-    alto = df["score_potencial"] >= 40
-    sem_tel = df["nu_telefone_cnes"].str.strip().eq("") | df["nu_telefone_cnes"].isna()
-    targets = df.index[alto | sem_tel].tolist()
+    # ── Telefone Google: só para quem NÃO tem telefone no CNES ─────────────
+    # (se já tem no CNES, Google é redundante; assim reduz tempo de ~horas para ~30s)
+    _sem = df["nu_telefone_cnes"].str.strip().eq("") | df["nu_telefone_cnes"].isna()
+    targets = df.index[_sem].tolist()
 
     if targets and progress_text_slot:
         progress_text_slot.text(f"📞 Buscando telefones no Google para {len(targets)} estabelecimentos…")
 
     def _phone_worker(idx):
         row = df.loc[idx]
-        nome = row.get("no_fantasia") or row.get("no_razao_social") or ""
-        return idx, _get_google_phone(nome, row.get("municipio_nome",""), row.get("category",""))
+        return idx, _get_google_phone(row.get("no_razao_social",""), row.get("municipio_nome",""))
 
-    with ThreadPoolExecutor(max_workers=5) as ex:
+    with ThreadPoolExecutor(max_workers=20) as ex:
         for idx, phone in ex.map(_phone_worker, targets):
             df.at[idx, "nu_telefone_google"] = phone
 
