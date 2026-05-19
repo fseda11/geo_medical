@@ -99,20 +99,53 @@ def _yn_str(v: str) -> str:
 # ── Cache de telefones Google ──────────────────────────────────────────────────
 _google_phone_cache: Dict[str, str] = {}
 
+def _get_phone_from_cnpj(cnpj: str) -> str:
+    """BrasilAPI: telefone direto da Receita Federal pelo CNPJ."""
+    cnpj_clean = "".join(c for c in str(cnpj) if c.isdigit())
+    if len(cnpj_clean) != 14:
+        return ""
+    key = f"cnpj:{cnpj_clean}"
+    if key in _google_phone_cache:
+        return _google_phone_cache[key]
+    phone = ""
+    try:
+        r = requests.get(
+            f"https://brasilapi.com.br/api/cnpj/v1/{cnpj_clean}",
+            timeout=5,
+        )
+        if r.status_code == 200:
+            d = r.json()
+            raw = d.get("ddd_telefone_1") or d.get("ddd_telefone_2") or ""
+            raw = raw.strip()
+            if raw:
+                # "21 25551234" → "(21) 2555-1234"
+                digits = "".join(c for c in raw if c.isdigit())
+                if len(digits) == 10:
+                    phone = f"({digits[:2]}) {digits[2:6]}-{digits[6:]}"
+                elif len(digits) == 11:
+                    phone = f"({digits[:2]}) {digits[2:7]}-{digits[7:]}"
+                else:
+                    phone = raw
+    except Exception:
+        phone = ""
+    _google_phone_cache[key] = phone
+    return phone
+
+
 def _get_google_phone(name: str, city: str) -> str:
+    """Fallback via Google Places (findplacefromtext) quando não há CNPJ."""
     key = f"{name}|{city}"
     if key in _google_phone_cache:
         return _google_phone_cache[key]
+    phone = ""
     try:
-        url = "https://maps.googleapis.com/maps/api/place/findplacefromtext/json"
-        params = {
-            "input":     f"{name} {city} Brasil",
-            "inputtype": "textquery",
-            "fields":    "formatted_phone_number",
-            "key":       GOOGLE_API_KEY,
-        }
-        resp = requests.get(url, params=params, timeout=6)
-        phone = (resp.json().get("candidates") or [{}])[0].get("formatted_phone_number", "") or ""
+        r = requests.get(
+            "https://maps.googleapis.com/maps/api/place/findplacefromtext/json",
+            params={"input": f"{name} {city} Brasil", "inputtype": "textquery",
+                    "fields": "formatted_phone_number", "key": GOOGLE_API_KEY},
+            timeout=6,
+        )
+        phone = (r.json().get("candidates") or [{}])[0].get("formatted_phone_number", "") or ""
     except Exception:
         phone = ""
     _google_phone_cache[key] = phone
@@ -352,8 +385,14 @@ def get_establishments_for_municipalities(
 
     def _phone_worker(idx):
         row = df.loc[idx]
-        nome = (row.get("no_fantasia") or row.get("no_razao_social") or "").strip()
-        return idx, _get_google_phone(nome, row.get("municipio_nome",""))
+        # Tenta CNPJ primeiro (Receita Federal, mais confiável)
+        cnpj = str(row.get("co_cnpj") or "").strip()
+        phone = _get_phone_from_cnpj(cnpj) if cnpj else ""
+        # Fallback: Google Places
+        if not phone:
+            nome = (row.get("no_fantasia") or row.get("no_razao_social") or "").strip()
+            phone = _get_google_phone(nome, row.get("municipio_nome",""))
+        return idx, phone
 
     with ThreadPoolExecutor(max_workers=20) as ex:
         for idx, phone in ex.map(_phone_worker, targets):
