@@ -89,13 +89,13 @@ with st.sidebar:
         key="city_searchbox",
     )
 
-    distance_km = st.slider(
+    distance_km = st.number_input(
         "Distância máxima por rodovias (km)",
-        min_value=50,
-        max_value=300,
+        min_value=1,
+        max_value=500,
         value=DEFAULT_DISTANCE_KM,
-        step=25,
-        help="Distância rodoviária real, calculada via Google Distance Matrix.",
+        step=1,
+        help="Digite qualquer valor de 1 a 500 km. Para bairros use 2–15 km.",
     )
 
     _city_lat = st.session_state.get("origin_lat", 0)
