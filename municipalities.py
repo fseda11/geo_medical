@@ -76,7 +76,10 @@ def get_candidate_municipalities(
     if df.empty:
         return df
 
-    max_straight = max_road_km * STRAIGHT_LINE_FACTOR
+    # Para buscas curtas (bairro/cidade), usa fator menor — ruas urbanas
+    # têm desvios menores que rodovias intermunicipais
+    factor = 1.2 if max_road_km < 30 else STRAIGHT_LINE_FACTOR
+    max_straight = max_road_km * factor
 
     df["straight_km"] = df.apply(
         lambda r: haversine_km(origin_lat, origin_lng, r["latitude"], r["longitude"]),
@@ -84,7 +87,8 @@ def get_candidate_municipalities(
     )
 
     # Exclui o próprio município de origem (distância ~0)
-    candidates = df[(df["straight_km"] > 0.5) & (df["straight_km"] <= max_straight)].copy()
+    min_dist = 0.1 if max_road_km < 10 else 0.5
+    candidates = df[(df["straight_km"] > min_dist) & (df["straight_km"] <= max_straight)].copy()
     return candidates.reset_index(drop=True)
 
 
@@ -314,13 +318,16 @@ def get_reachable_municipalities(
 
     reachable = reachable.sort_values("road_km").reset_index(drop=True)
 
-    # ── Filtro de corredor (só municípios próximos às estradas percorridas) ────
-    if len(reachable) > 0 and api_key:
+    # ── Filtro de corredor ────────────────────────────────────────────────────
+    # Para distâncias curtas (< 30 km = busca urbana/bairro), o filtro de
+    # corredor é inadequado — ele usa polylines de rodovias, não vias urbanas.
+    # Nesses casos retorna todos os municípios dentro do raio direto.
+    if len(reachable) > 0 and api_key and max_road_km >= 30:
         if progress_text_slot is not None:
             progress_text_slot.text("🛣️ Aplicando filtro de corredor rodoviário…")
         reachable = filter_by_route_corridor(
             reachable, origin_lat, origin_lng,
-            corridor_km=25,   # municípios até 25km das rodovias principais
+            corridor_km=25,
             api_key=api_key,
             sample_every_n=4,
         )
