@@ -43,6 +43,9 @@ UNIT_TYPES = {
     50: "HOSPITAL DIA",
     65: "PRONTO ATENDIMENTO",
     70: "CAPS",
+    32: "SECRETARIA MUNICIPAL DE SAÚDE",
+    33: "SECRETARIA ESTADUAL DE SAÚDE",
+    68: "SECRETARIA DE SAÚDE",
 }
 
 # Tipos relevantes para medicamentos de alto custo
@@ -55,6 +58,7 @@ CATEGORY_MAP = {
     36: "clinica",   4:  "clinica",
     43: "farmacia",
     1:  "ubs",       2:  "ubs",      71: "ubs",
+    32: "secretaria", 33: "secretaria", 68: "secretaria",
 }
 
 CATEGORY_COLORS = {
@@ -64,6 +68,7 @@ CATEGORY_COLORS = {
     "farmacia": "#388E3C",
     "ubs":      "#0288D1",
     "outro":    "#757575",
+    "secretaria": "#6A1B9A",
 }
 
 CATEGORY_ICONS = {
@@ -73,6 +78,7 @@ CATEGORY_ICONS = {
     "farmacia": "💊",
     "ubs":      "🩺",
     "outro":    "🏢",
+    "secretaria": "🏛️",
 }
 
 # ── Scoring de potencial de medicamentos de alto custo ────────────────────────
@@ -83,4 +89,5 @@ SCORE_WEIGHTS = {
     "farmacia":  40,
     "ubs":       10,
     "outro":     5,
+    "secretaria": 20,
 }

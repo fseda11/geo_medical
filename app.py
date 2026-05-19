@@ -16,7 +16,7 @@ from streamlit_searchbox import st_searchbox
 
 from config import DEFAULT_DISTANCE_KM, GOOGLE_API_KEY, CATEGORY_ICONS
 from cnes import get_establishments_for_municipalities, summarize_establishments
-from geocoding import geocode_by_place_id, geocode_by_text, search_cities_autocomplete
+from geocoding import geocode_by_place_id, geocode_by_text, search_cities_autocomplete, search_neighborhoods_autocomplete
 from map_builder import build_map
 from municipalities import get_reachable_municipalities
 
@@ -80,14 +80,33 @@ with st.sidebar:
         help="Distância rodoviária real, calculada via Google Distance Matrix.",
     )
 
+    _city_lat = st.session_state.get("origin_lat", 0)
+    _city_lng = st.session_state.get("origin_lng", 0)
+    def _search_bairro(q):
+        return search_neighborhoods_autocomplete(q, _city_lat, _city_lng)
+    selected_bairro = st_searchbox(
+        search_function=_search_bairro,
+        placeholder="Bairro (opcional — padrão: centro da cidade)",
+        label="Bairro de origem",
+        key="bairro_searchbox",
+    )
+
     st.markdown("---")
     st.markdown("### 🔧 Filtros de estabelecimento")
 
     filter_categories = st.multiselect(
         "Categorias",
-        options=["hospital", "upa", "clinica", "farmacia", "ubs", "outro"],
-        default=["hospital", "upa", "clinica", "farmacia", "ubs", "outro"],
+        options=["hospital", "upa", "clinica", "farmacia", "ubs", "secretaria", "outro"],
+        default=["hospital", "upa", "clinica", "farmacia", "ubs", "secretaria", "outro"],
         format_func=lambda c: f"{CATEGORY_ICONS.get(c, '🏢')} {c.capitalize()}",
+    )
+
+    especialidade_filter = st.multiselect(
+        "🔬 Especialidade",
+        options=['Cardiologia', 'Neurologia', 'Oncologia', 'Ortopedia', 'Pediatria', 'Ginecologia', 'Oftalmologia', 'Dermatologia', 'Psiquiatria', 'Endocrinologia', 'Nefrologia', 'Reumatologia', 'Gastroenterologia', 'Pneumologia', 'Urologia', 'Infectologia', 'Hematologia', 'Geriatria', 'Nutrologia', 'Fisioterapia'],
+        default=[],
+        placeholder="Todas as especialidades",
+        help="Filtra por especialidade no nome do estabelecimento.",
     )
 
     only_relevant = st.checkbox(
@@ -211,6 +230,15 @@ if search_btn:
             establishments = establishments[
                 establishments["score_potencial"] >= min_score
             ]
+        if especialidade_filter:
+            import re as _re
+            pat = "|".join(_re.escape(e) for e in especialidade_filter)
+            mask = (
+                establishments["no_razao_social"].str.contains(pat, case=False, na=False) |
+                establishments["no_fantasia"].str.contains(pat, case=False, na=False) |
+                establishments["ds_tipo_unidade"].str.contains(pat, case=False, na=False)
+            )
+            establishments = establishments[mask]
 
     # ── Monta mapa ────────────────────────────────────────────────────────────
     with st.spinner("🗺️ Construindo mapa…"):
@@ -227,6 +255,16 @@ if search_btn:
     st.session_state.result_df    = establishments
     st.session_state.result_munis = municipalities
     st.session_state.origin_data  = origin
+    st.session_state["origin_lat"] = origin["lat"]
+    st.session_state["origin_lng"] = origin["lng"]
+    if selected_bairro:
+        _bq = selected_bairro
+        _bo = None
+        if isinstance(_bq, tuple): _bo = geocode_by_place_id(_bq[1])
+        elif isinstance(_bq, str) and len(_bq) > 3: _bo = geocode_by_text(_bq)
+        if _bo:
+            origin["lat"] = _bo["lat"]
+            origin["lng"] = _bo["lng"]
     st.session_state["show_results"] = True
 
 # ── Exibição dos resultados ───────────────────────────────────────────────────

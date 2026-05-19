@@ -50,6 +50,33 @@ def search_cities_autocomplete(query: str) -> List[Tuple[str, str]]:
         return []
 
 
+# ── Autocomplete de bairros ───────────────────────────────────────────────────
+
+def search_neighborhoods_autocomplete(query: str, city_lat: float = 0, city_lng: float = 0) -> list:
+    """Autocomplete de bairros dentro de uma cidade brasileira."""
+    if len(query) < 2:
+        return []
+    params = {
+        "input":      query,
+        "types":      "(regions)",
+        "language":   "pt-BR",
+        "components": "country:br",
+        "key":        GOOGLE_API_KEY,
+    }
+    if city_lat and city_lng:
+        params["location"]     = f"{city_lat},{city_lng}"
+        params["radius"]       = "30000"
+        params["strictbounds"] = "true"
+    try:
+        resp = requests.get(GMAPS_PLACES_AC_URL, params=params, timeout=8)
+        return [
+            (p["description"], p["place_id"])
+            for p in resp.json().get("predictions", [])
+        ]
+    except Exception:
+        return []
+
+
 # ── Geocodificação ────────────────────────────────────────────────────────────
 
 def geocode_by_place_id(place_id: str) -> Optional[Dict]:
