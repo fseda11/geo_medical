@@ -164,17 +164,21 @@ def _calc_score(row: pd.Series) -> int:
     elif leitos_proxy > 0:    score += 5
 
     # 3. Serviços adicionais (0–10)
-    score += min(10, (int(row.get("tem_cirurgia") or 0) +
-                      int(row.get("tem_obstetrico") or 0) +
-                      int(row.get("atend_ambulatorial") or 0)) * 3)
+    def _sb(v):
+        if isinstance(v, str): return 1 if v.strip().lower() == "sim" else 0
+        try: return int(v or 0)
+        except: return 0
+    score += min(10, (_sb(row.get("tem_cirurgia")) +
+                      _sb(row.get("tem_obstetrico")) +
+                      _sb(row.get("atend_ambulatorial"))) * 3)
 
-    # 4. Gestão: federal/estadual prioriza alta complexidade (0–10)
+    # 4. Gestão — aceita "M" ou "Municipal"
     gestao = str(row.get("tp_gestao", "")).upper()
-    if gestao in ("E", "S"):   # estadual / federal
+    if any(x in gestao for x in ("ESTADUAL", "FEDERAL", "SEM GEST")):
         score += 10
-    elif gestao == "D":         # dupla
+    elif "DUPLA" in gestao or gestao == "D":
         score += 6
-    elif gestao == "M":         # municipal
+    elif "MUNICIPAL" in gestao or gestao == "M":
         score += 4
 
     return min(score, 100)
@@ -315,8 +319,10 @@ def get_establishments_for_municipalities(
     df = df.dropna(subset=["latitude", "longitude"])
     df = df.sort_values("score_potencial", ascending=False).reset_index(drop=True)
 
-    # ── Telefone Google para TODOS os estabelecimentos (cacheado por nome+cidade)
-    targets = df.index.tolist()
+    # ── Telefone Google: só para alto potencial (score ≥ 40) sem tel CNES ─────
+    alto = df["score_potencial"] >= 40
+    sem_tel = df["nu_telefone_cnes"].str.strip().eq("") | df["nu_telefone_cnes"].isna()
+    targets = df.index[alto | sem_tel].tolist()
 
     if targets and progress_text_slot:
         progress_text_slot.text(f"📞 Buscando telefones no Google para {len(targets)} estabelecimentos…")
