@@ -279,15 +279,33 @@ if search_btn:
     # ── Monta mapa ────────────────────────────────────────────────────────────
     # Para busca urbana, rotas vão para estabelecimentos top; para inter-cidades, municípios
     _urban = distance_km < 30
+    if _urban and not establishments.empty:
+        # Modo urbano: usa coordenadas dos top-15 estabelecimentos como destinos
+        # de rota em vez de centros de município — Directions API traça ruas urbanas
+        import pandas as _pd
+        _top = establishments.nlargest(min(15, len(establishments)), "score_potencial")
+        _munis_map = _pd.DataFrame({
+            "latitude":  _top["latitude"].values,
+            "longitude": _top["longitude"].values,
+            "nome":      _top["no_razao_social"].values,
+            "road_km":   _top["road_km"].values,
+        })
+        _routes_n = len(_munis_map)
+    else:
+        _munis_map = municipalities
+        _routes_n  = 999
+
     with st.spinner("🗺️ Construindo mapa…"):
         fmap = build_map(
             origin=origin,
-            municipalities=municipalities,
+            municipalities=_munis_map,
             establishments=establishments,
             max_km=distance_km,
-            draw_routes_to=999,
-            urban_mode=_urban,
+            draw_routes_to=_routes_n,
         )
+    if _urban:
+        fmap.zoom_start = 14
+        fmap.location  = [origin["lat"], origin["lng"]]
 
     # Salva na sessão
     st.session_state.result_map   = fmap
@@ -359,13 +377,25 @@ if st.session_state.result_map is not None and st.session_state.get("show_result
     with st.spinner("🗺️ Atualizando mapa…"):
         from map_builder import build_map as _bm
         _urban2 = distance_km < 30
+        if _urban2 and not _est_map.empty:
+            import pandas as _pd2
+            _top2 = _est_map.nlargest(min(15, len(_est_map)), "score_potencial")
+            _mm2 = _pd2.DataFrame({
+                "latitude":  _top2["latitude"].values,
+                "longitude": _top2["longitude"].values,
+                "nome":      _top2["no_razao_social"].values,
+                "road_km":   _top2["road_km"].values,
+            })
+            _rn2 = len(_mm2)
+        else:
+            _mm2 = st.session_state.result_munis
+            _rn2 = 999
         _fmap_f = _bm(
             origin=st.session_state.origin_data,
-            municipalities=st.session_state.result_munis,
+            municipalities=_mm2,
             establishments=_est_map,
             max_km=distance_km,
-            draw_routes_to=999,
-            urban_mode=_urban2,
+            draw_routes_to=_rn2,
         )
     st.caption("💡 Controle de camadas ▶ (canto superior direito) para ativar/desativar categorias.")
     st_folium(_fmap_f, use_container_width=True, height=640, returned_objects=[])

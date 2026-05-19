@@ -82,8 +82,7 @@ def build_map(
     municipalities: pd.DataFrame,
     establishments: pd.DataFrame,
     max_km: float = 150,
-    draw_routes_to: int = 8,
-    urban_mode: bool = False,
+    draw_routes_to: int = 8,  # nº de municípios top para desenhar rota real
 ) -> folium.Map:
     """
     Retorna mapa Folium completo com todas as camadas.
@@ -92,10 +91,9 @@ def build_map(
     """
 
     # ── Mapa base ──────────────────────────────────────────────────────────────
-    _zoom = 14 if urban_mode else 9
     m = folium.Map(
         location=[origin["lat"], origin["lng"]],
-        zoom_start=_zoom,
+        zoom_start=9,
         tiles=None,
     )
 
@@ -125,30 +123,12 @@ def build_map(
         tooltip=f"Raio de {max_km} km (referência — área real é por rodovias)",
     ).add_to(m)
 
-    # ── Rotas: para municípios (inter-cidades) ou estabelecimentos (urbano) ──
-    route_layer = folium.FeatureGroup(name="🛣️ Rotas", show=True)
+    # ── Rotas reais (Directions API) para os N municípios mais próximos ───────
+    route_layer = folium.FeatureGroup(name="🛣️ Rotas principais", show=True)
 
-    if urban_mode and not establishments.empty:
-        # Modo urbano: rotas para top-15 estabelecimentos por score
-        # O Directions API traça ruas e avenidas automaticamente
-        top_est = establishments.nlargest(min(15, len(establishments)), "score_potencial")
-        for _, est in top_est.iterrows():
-            try:
-                elat, elng = float(est["latitude"]), float(est["longitude"])
-            except Exception:
-                continue
-            coords = get_route_polyline(
-                origin["lat"], origin["lng"], elat, elng,
-                api_key=GOOGLE_API_KEY,
-            )
-            if coords:
-                folium.PolyLine(
-                    coords, weight=2, color="#1565C0", opacity=0.5, tooltip=None,
-                ).add_to(route_layer)
-
-    elif not urban_mode and not municipalities.empty and draw_routes_to > 0:
-        # Modo inter-cidades: rotas para municípios
-        for _, muni in municipalities.head(draw_routes_to).iterrows():
+    if not municipalities.empty:
+        top_munis = municipalities.head(draw_routes_to)
+        for _, muni in top_munis.iterrows():
             coords = get_route_polyline(
                 origin["lat"], origin["lng"],
                 muni["latitude"], muni["longitude"],
@@ -156,7 +136,11 @@ def build_map(
             )
             if coords:
                 folium.PolyLine(
-                    coords, weight=3, color="#1565C0", opacity=0.55, tooltip=None,
+                    coords,
+                    weight=3,
+                    color="#1565C0",
+                    opacity=0.55,
+                    tooltip=None,
                 ).add_to(route_layer)
 
     route_layer.add_to(m)
@@ -226,10 +210,10 @@ def build_map(
 
                 score = est.get("score_potencial", 0)
                 # Cor do marker individual baseada no score
-                if score >= 60:   mc = "#1B5E20"  # verde escuro
-                elif score >= 40: mc = "#E65100"  # laranja
-                elif score >= 25: mc = "#F9A825"  # amarelo
-                else:             mc = "#546E7A"  # cinza
+                if score >= 60:   mc = "#1B5E20"
+                elif score >= 40: mc = "#E65100"
+                elif score >= 25: mc = "#F9A825"
+                else:             mc = "#546E7A"
 
                 # Nome preferencial: fantasia > razao_social
                 nome = (est.get("no_fantasia") or est.get("no_razao_social") or "Estabelecimento").strip()
@@ -249,12 +233,11 @@ def build_map(
                     f'font-size:12px;">{CATEGORY_ICONS.get(cat,"🏢")}</div>'
                 )
 
-                _loc = f"{muni} / {uf}" if uf else muni
                 tooltip_html = (
                     f"<div style='font-family:Arial;font-size:13px;min-width:220px'>"
                     f"<b>{nome}</b><br>"
                     f"<span style='color:#888'>{tipo}</span><br>"
-                    f"📍 {_loc} · {dist} km<br>"
+                    f"📍 {muni}{' / '+uf if uf else ''} · {dist} km<br>"
                     f"📞 {tel_c}"
                     f"{' &nbsp;|&nbsp; 🔍 '+tel_g if tel_g != '—' else ''}<br>"
                     f"<b style='color:{mc}'>⭐ Score {score}/100</b>"
