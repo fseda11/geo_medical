@@ -86,36 +86,42 @@ def _yn_str(v: str) -> str:
 # ── Cache de telefones Google ──────────────────────────────────────────────────
 _google_phone_cache: Dict[str, str] = {}
 
-def _get_google_phone(name: str, city: str) -> str:
-    """Busca telefone: tenta em 1 chamada, faz 2ª só se necessário."""
+def _get_google_phone(name: str, city: str, category: str = "") -> str:
+    """
+    Busca telefone via Google Places em 2 passos:
+    1. textsearch → place_id (melhor busca por nome comercial)
+    2. place/details → formatted_phone_number
+    """
     key = f"{name}|{city}"
     if key in _google_phone_cache:
         return _google_phone_cache[key]
     phone = ""
     try:
-        # Tenta pegar place_id + phone em uma única chamada
+        # Passo 1: Text Search para achar o lugar por nome + cidade
         r1 = requests.get(
-            "https://maps.googleapis.com/maps/api/place/findplacefromtext/json",
-            params={"input": f"{name} {city}", "inputtype": "textquery",
-                    "fields": "place_id,formatted_phone_number",
-                    "locationbias": "country:BR", "key": GOOGLE_API_KEY},
-            timeout=3,
+            "https://maps.googleapis.com/maps/api/place/textsearch/json",
+            params={
+                "query": f"{name} {city}",
+                "region": "br",
+                "key": GOOGLE_API_KEY,
+            },
+            timeout=4,
         )
-        data1 = r1.json()
-        candidate = (data1.get("candidates") or [{}])[0]
-        phone = candidate.get("formatted_phone_number", "") or ""
-        # Se não veio phone na 1ª chamada, tenta Place Details com o place_id
-        if not phone:
-            place_id = candidate.get("place_id", "")
-            if place_id:
-                r2 = requests.get(
-                    "https://maps.googleapis.com/maps/api/place/details/json",
-                    params={"place_id": place_id,
-                            "fields": "formatted_phone_number",
-                            "key": GOOGLE_API_KEY},
-                    timeout=3,
-                )
-                phone = r2.json().get("result", {}).get("formatted_phone_number", "") or ""
+        results = r1.json().get("results", [])
+        place_id = results[0].get("place_id", "") if results else ""
+
+        if place_id:
+            # Passo 2: Place Details para pegar o telefone
+            r2 = requests.get(
+                "https://maps.googleapis.com/maps/api/place/details/json",
+                params={
+                    "place_id": place_id,
+                    "fields":   "formatted_phone_number",
+                    "key":      GOOGLE_API_KEY,
+                },
+                timeout=4,
+            )
+            phone = r2.json().get("result", {}).get("formatted_phone_number", "") or ""
     except Exception:
         phone = ""
     _google_phone_cache[key] = phone
@@ -335,17 +341,20 @@ def get_establishments_for_municipalities(
     df = df.dropna(subset=["latitude", "longitude"])
     df = df.sort_values("score_potencial", ascending=False).reset_index(drop=True)
 
-    # ── Telefone Google para todos ───────────────────────────────────────────
-    targets = df.index.tolist()
+    # ── Telefone Google: só para alto potencial (score ≥ 40) sem tel CNES ─────
+    alto = df["score_potencial"] >= 40
+    sem_tel = df["nu_telefone_cnes"].str.strip().eq("") | df["nu_telefone_cnes"].isna()
+    targets = df.index[alto | sem_tel].tolist()
 
     if targets and progress_text_slot:
         progress_text_slot.text(f"📞 Buscando telefones no Google para {len(targets)} estabelecimentos…")
 
     def _phone_worker(idx):
         row = df.loc[idx]
-        return idx, _get_google_phone(row.get("no_razao_social",""), row.get("municipio_nome",""))
+        nome = row.get("no_fantasia") or row.get("no_razao_social") or ""
+        return idx, _get_google_phone(nome, row.get("municipio_nome",""), row.get("category",""))
 
-    with ThreadPoolExecutor(max_workers=20) as ex:
+    with ThreadPoolExecutor(max_workers=5) as ex:
         for idx, phone in ex.map(_phone_worker, targets):
             df.at[idx, "nu_telefone_google"] = phone
 
