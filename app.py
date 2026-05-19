@@ -98,6 +98,13 @@ with st.sidebar:
 
     min_score = st.slider("Score mínimo de potencial", 0, 80, 0, 5)
 
+    potencial_filter = st.multiselect(
+        "Nível de potencial",
+        options=["Alto (≥ 60)", "Médio (40–59)", "Baixo (< 40)"],
+        default=["Alto (≥ 60)", "Médio (40–59)", "Baixo (< 40)"],
+        help="Filtra marcadores no mapa pelo nível de potencial.",
+    )
+
     st.markdown("---")
 
     search_btn = st.button(
@@ -206,6 +213,14 @@ if search_btn:
             establishments = establishments[
                 establishments["score_potencial"] >= min_score
             ]
+        if potencial_filter and len(potencial_filter) < 3:
+            import functools, operator as _op
+            masks = []
+            if "Alto (≥ 60)"   in potencial_filter: masks.append(establishments["score_potencial"] >= 60)
+            if "Médio (40–59)" in potencial_filter: masks.append((establishments["score_potencial"] >= 40) & (establishments["score_potencial"] < 60))
+            if "Baixo (< 40)"  in potencial_filter: masks.append(establishments["score_potencial"] < 40)
+            if masks:
+                establishments = establishments[functools.reduce(_op.or_, masks)]
 
     # ── Monta mapa ────────────────────────────────────────────────────────────
     with st.spinner("🗺️ Construindo mapa…"):
@@ -250,6 +265,7 @@ if st.session_state.result_map is not None:
         col.metric(label, f"{val:,}", delta=delta)
 
     st.markdown("---")
+    st.markdown("---")
 
     # ── Mapa full-width ──────────────────────────────────────────────────────
     st.markdown("#### 🗺️ Mapa de cobertura")
@@ -288,8 +304,7 @@ if st.session_state.result_map is not None:
             "dt_atualizacao":     "Atualização",
         }
         _drop = ["latitude","longitude","category","tp_unidade","tp_pfpj",
-                 "qt_leito_internacao","qt_leito_sus","atend_ambulatorial",
-                 "nu_telefone","ds_natureza_juridica"]
+                 "qt_leito_internacao","qt_leito_sus","atend_ambulatorial","nu_telefone"]
 
         c1, c2, c3 = st.columns([3, 1, 1])
         with c1:
@@ -356,9 +371,35 @@ else:
       </div>
       <div style="background:#FFF3E0;padding:20px;border-radius:10px;border-left:4px solid #E65100">
         <h4 style="margin:0;color:#E65100">⭐ Score de potencial</h4>
-        <p style="margin:8px 0 0;color:#555;font-size:14px">Algoritmo prioriza hospitais, farmácias e clínicas de especialidade com maior potencial de consumo de medicamentos de alto custo.</p>
+        <p style="margin:8px 0 0;color:#555;font-size:14px">Algoritmo prioriza hospitais, farmácias e clínicas com maior potencial de consumo de medicamentos de alto custo.</p>
       </div>
     </div>""", unsafe_allow_html=True)
+
+    st.markdown("---")
+    with st.expander("📊 Como é calculado o Score de Potencial?", expanded=False):
+        st.markdown("""
+O score vai de **0 a 100 pontos** e estima o potencial de consumo de medicamentos de alto custo:
+
+| Fator | Critério | Pontos |
+|---|---|---|
+| **Tipo de unidade** | Hospital Geral / Especializado | 50 |
+| | Farmácia | 40 |
+| | UPA / Pronto-Socorro / Clínica de Especialidade | 30 |
+| | UBS / Posto de Saúde | 10 |
+| | Outros (consultórios, CAPS…) | 5 |
+| **Capacidade hospitalar** | Flags de internação + cirurgia + obstetrícia | até 30 |
+| **Serviços adicionais** | Centro cirúrgico, obstétrico, ambulatorial | até 10 |
+| **Gestão** | Estadual / Federal (referência regional) | +10 |
+| | Dupla | +6 |
+| | Municipal | +4 |
+
+**Leitura:**
+- 🟢 **≥ 60 — Alto:** hospital de referência com múltiplos serviços
+- 🟠 **40–59 — Médio:** farmácia, UPA ou hospital menor
+- ⚫ **< 40 — Baixo:** clínica, UBS ou consultório
+
+> O score é um indicador de priorização comercial, não de qualidade assistencial.
+        """)
 
 # ── Rodapé ────────────────────────────────────────────────────────────────────
 st.markdown(
