@@ -145,66 +145,90 @@ def build_map(
 
     route_layer.add_to(m)
 
-    # ── Estabelecimentos de saúde (clusters por categoria) ────────────────────
+    # ── Estabelecimentos — cluster único com cor dinâmica por score médio ────
     if not establishments.empty:
-        # Clusters separados por categoria para controle de camadas
-        categories = establishments["category"].unique()
 
-        for cat in categories:
-            cat_df = establishments[establishments["category"] == cat]
-            color_hex = CATEGORY_COLORS.get(cat, "#757575")
-            icon_emoji = CATEGORY_ICONS.get(cat, "🏢")
+        # icon_create_function lê data-score de cada marker filho,
+        # calcula a média e pinta o cluster de acordo.
+        icon_create_fn = """
+        function(cluster) {
+            var children = cluster.getAllChildMarkers();
+            var total = 0, count = 0;
+            children.forEach(function(m) {
+                var el = m.options.icon.options.html.match(/data-score="([0-9]+)"/);
+                var s = el ? parseInt(el[1]) : 0;
+                total += s; count++;
+            });
+            var avg = count > 0 ? total / count : 0;
+            var bg, border;
+            if      (avg >= 60) { bg="#1B5E20"; border="#2E7D32"; }
+            else if (avg >= 40) { bg="#E65100"; border="#F57C00"; }
+            else if (avg >= 25) { bg="#F9A825"; border="#FBC02D"; }
+            else                { bg="#424242"; border="#757575"; }
+            return L.divIcon({
+                html: '<div style="background:'+bg+';border:3px solid '+border+
+                      ';color:#fff;border-radius:50%;width:36px;height:36px;'+
+                      'display:flex;align-items:center;justify-content:center;'+
+                      'font-weight:bold;font-size:13px;">'+cluster.getChildCount()+'</div>',
+                className: '',
+                iconSize: L.point(36, 36)
+            });
+        }
+        """
 
-            # Nome amigável para o controle de camadas
-            cat_label = {
-                "hospital": "🏥 Hospitais",
-                "upa": "🚨 UPAs / Pronto-Socorros",
-                "clinica": "🏨 Clínicas / Especialidades",
-                "farmacia": "💊 Farmácias",
-                "ubs": "🩺 UBS / Postos",
-                "outro": "🏢 Outros",
-            }.get(cat, cat.capitalize())
+        cluster = MarkerCluster(
+            name="🏥 Estabelecimentos",
+            show=True,
+            icon_create_function=icon_create_fn,
+            options={
+                "spiderfyOnMaxZoom": True,
+                "showCoverageOnHover": False,
+                "maxClusterRadius": 60,
+                "disableClusteringAtZoom": 14,
+            },
+        )
 
-            cluster = MarkerCluster(
-                name=cat_label,
-                show=True,
-                options={
-                    "spiderfyOnMaxZoom": True,
-                    "showCoverageOnHover": False,
-                    "maxClusterRadius": 50,
-                },
+        for _, est in establishments.iterrows():
+            lat = est.get("latitude")
+            lng = est.get("longitude")
+            if lat is None or lng is None:
+                continue
+            try:
+                lat, lng = float(lat), float(lng)
+            except Exception:
+                continue
+
+            score = est.get("score_potencial", 0)
+            cat   = est.get("category", "outro")
+            color = CATEGORY_COLORS.get(cat, "#757575")
+            icon  = CATEGORY_ICONS.get(cat, "🏢")
+
+            # divIcon com data-score para o icon_create_function ler
+            div_html = (
+                f'<div data-score="{score}" style="'
+                f'background:{color};border:2px solid rgba(0,0,0,.3);'
+                f'color:#fff;border-radius:50%;width:28px;height:28px;'
+                f'display:flex;align-items:center;justify-content:center;'
+                f'font-size:14px;">{icon}</div>'
             )
 
-            for _, est in cat_df.iterrows():
-                lat = est.get("latitude")
-                lng = est.get("longitude")
-                if lat is None or lng is None:
-                    continue
+            folium.Marker(
+                location=[lat, lng],
+                popup=folium.Popup(_popup_html(est), max_width=300),
+                tooltip=folium.Tooltip(
+                    f"<b>{est.get('no_razao_social','Estabelecimento')}</b><br>"
+                    f"{est.get('ds_tipo_unidade','—')} · {est.get('municipio_nome','—')}<br>"
+                    f"⭐ Score: {score}",
+                    sticky=True,
+                ),
+                icon=folium.DivIcon(
+                    html=div_html,
+                    icon_size=(28, 28),
+                    icon_anchor=(14, 14),
+                ),
+            ).add_to(cluster)
 
-                try:
-                    lat, lng = float(lat), float(lng)
-                except Exception:
-                    continue
-
-                score = est.get("score_potencial", 0)
-                icon_color = (
-                    "green"    if score >= 60 else
-                    "orange"   if score >= 35 else
-                    "lightgray"
-                )
-
-                folium.Marker(
-                    location=[lat, lng],
-                    popup=folium.Popup(_popup_html(est), max_width=300),
-                    tooltip=f"{est.get('no_razao_social','Estabelecimento')} | ⭐{score}",
-                    icon=folium.Icon(
-                        color=icon_color,
-                        icon="plus-sign",
-                        prefix="glyphicon",
-                    ),
-                ).add_to(cluster)
-
-            cluster.add_to(m)
+        cluster.add_to(m)
 
     # ── Marcador de origem ────────────────────────────────────────────────────
     folium.Marker(
@@ -225,15 +249,15 @@ def build_map(
                 box-shadow:0 2px 10px rgba(0,0,0,.2);font-family:Arial;font-size:12px;color:#222 !important;
                 color:#222 !important;">
       <b style="display:block;margin-bottom:8px;color:#222">Potencial de Alto Custo</b>
-      <div><span style="background:#2E7D32;color:#fff;padding:2px 8px;
-                        border-radius:10px;margin-right:6px">≥ 60</span> 🟢 Alto</div>
+      <div><span style="background:#4CAF50;color:#fff;padding:2px 8px;
+                        border-radius:10px;margin-right:6px">≥ 60</span> Alto</div>
       <div style="margin-top:4px">
         <span style="background:#FF9800;color:#fff;padding:2px 8px;
-                     border-radius:10px;margin-right:6px">35–59</span> 🟠 Médio
+                     border-radius:10px;margin-right:6px">35–59</span> Médio
       </div>
       <div style="margin-top:4px">
         <span style="background:#9E9E9E;color:#fff;padding:2px 8px;
-                     border-radius:10px;margin-right:6px">&lt; 35</span> ⚫ Baixo
+                     border-radius:10px;margin-right:6px">&lt; 35</span> Baixo
       </div>
       <hr style="margin:8px 0;border-color:#eee">
       <b style="display:block;margin-bottom:6px;color:#222">Distância rodoviária</b>

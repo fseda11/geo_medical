@@ -87,39 +87,19 @@ def _yn_str(v: str) -> str:
 _google_phone_cache: Dict[str, str] = {}
 
 def _get_google_phone(name: str, city: str) -> str:
-    """Busca telefone no Google Places em 2 passos: findplace → place_id → details."""
     key = f"{name}|{city}"
     if key in _google_phone_cache:
         return _google_phone_cache[key]
-    phone = ""
     try:
-        # Passo 1: acha o place_id
-        r1 = requests.get(
-            "https://maps.googleapis.com/maps/api/place/findplacefromtext/json",
-            params={
-                "input":       f"{name} {city}",
-                "inputtype":   "textquery",
-                "fields":      "place_id",
-                "locationbias": "country:BR",
-                "key":         GOOGLE_API_KEY,
-            },
-            timeout=6,
-        )
-        candidates = r1.json().get("candidates", [])
-        place_id = candidates[0].get("place_id", "") if candidates else ""
-
-        if place_id:
-            # Passo 2: busca telefone nos detalhes do lugar
-            r2 = requests.get(
-                "https://maps.googleapis.com/maps/api/place/details/json",
-                params={
-                    "place_id": place_id,
-                    "fields":   "formatted_phone_number",
-                    "key":      GOOGLE_API_KEY,
-                },
-                timeout=6,
-            )
-            phone = r2.json().get("result", {}).get("formatted_phone_number", "") or ""
+        url = "https://maps.googleapis.com/maps/api/place/findplacefromtext/json"
+        params = {
+            "input":     f"{name} {city} Brasil",
+            "inputtype": "textquery",
+            "fields":    "formatted_phone_number",
+            "key":       GOOGLE_API_KEY,
+        }
+        resp = requests.get(url, params=params, timeout=6)
+        phone = (resp.json().get("candidates") or [{}])[0].get("formatted_phone_number", "") or ""
     except Exception:
         phone = ""
     _google_phone_cache[key] = phone
@@ -184,21 +164,17 @@ def _calc_score(row: pd.Series) -> int:
     elif leitos_proxy > 0:    score += 5
 
     # 3. Serviços adicionais (0–10)
-    def _sb(v):
-        if isinstance(v, str): return 1 if v.strip().lower() == "sim" else 0
-        try: return int(v or 0)
-        except: return 0
-    score += min(10, (_sb(row.get("tem_cirurgia")) +
-                      _sb(row.get("tem_obstetrico")) +
-                      _sb(row.get("atend_ambulatorial"))) * 3)
+    score += min(10, (int(row.get("tem_cirurgia") or 0) +
+                      int(row.get("tem_obstetrico") or 0) +
+                      int(row.get("atend_ambulatorial") or 0)) * 3)
 
-    # 4. Gestão — aceita código ("M") ou decodificado ("Municipal")
+    # 4. Gestão: federal/estadual prioriza alta complexidade (0–10)
     gestao = str(row.get("tp_gestao", "")).upper()
-    if any(x in gestao for x in ("ESTADUAL", "FEDERAL", "SEM GEST")):
+    if gestao in ("E", "S"):   # estadual / federal
         score += 10
-    elif "DUPLA" in gestao or gestao == "D":
+    elif gestao == "D":         # dupla
         score += 6
-    elif "MUNICIPAL" in gestao or gestao == "M":
+    elif gestao == "M":         # municipal
         score += 4
 
     return min(score, 100)
@@ -339,10 +315,8 @@ def get_establishments_for_municipalities(
     df = df.dropna(subset=["latitude", "longitude"])
     df = df.sort_values("score_potencial", ascending=False).reset_index(drop=True)
 
-    # ── Telefone Google: só para alto potencial (score ≥ 40) sem tel CNES ─────
-    alto = df["score_potencial"] >= 40
-    sem_tel = df["nu_telefone_cnes"].str.strip().eq("") | df["nu_telefone_cnes"].isna()
-    targets = df.index[alto | sem_tel].tolist()
+    # ── Telefone Google para TODOS os estabelecimentos (cacheado por nome+cidade)
+    targets = df.index.tolist()
 
     if targets and progress_text_slot:
         progress_text_slot.text(f"📞 Buscando telefones no Google para {len(targets)} estabelecimentos…")
