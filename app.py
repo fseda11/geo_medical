@@ -16,7 +16,7 @@ from streamlit_searchbox import st_searchbox
 
 from config import DEFAULT_DISTANCE_KM, GOOGLE_API_KEY, CATEGORY_ICONS
 from cnes import get_establishments_for_municipalities, summarize_establishments
-from geocoding import geocode_by_place_id, geocode_by_text, search_cities_autocomplete, search_neighborhoods_autocomplete
+from geocoding import geocode_by_place_id, geocode_by_text, search_cities_autocomplete
 from map_builder import build_map
 from municipalities import get_reachable_municipalities
 
@@ -58,6 +58,24 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+# ── Neighborhood autocomplete (inline para evitar dependência de geocoding) ───
+def search_neighborhoods_autocomplete(query: str, city_lat: float = 0, city_lng: float = 0) -> list:
+    import requests
+    from config import GOOGLE_API_KEY, GMAPS_PLACES_AC_URL
+    if len(query) < 2:
+        return []
+    params = {"input": query, "types": "(regions)", "language": "pt-BR",
+              "components": "country:br", "key": GOOGLE_API_KEY}
+    if city_lat and city_lng:
+        params["location"] = f"{city_lat},{city_lng}"
+        params["radius"]   = "30000"
+    try:
+        resp = requests.get(GMAPS_PLACES_AC_URL, params=params, timeout=8)
+        return [(p["description"], p["place_id"]) for p in resp.json().get("predictions", [])]
+    except Exception:
+        return []
+
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
