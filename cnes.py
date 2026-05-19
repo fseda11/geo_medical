@@ -98,6 +98,35 @@ def _yn_str(v: str) -> str:
 
 # ── Cache de telefones Google ──────────────────────────────────────────────────
 _google_phone_cache: Dict[str, str] = {}
+_geocode_cache: Dict[str, tuple] = {}
+
+def _geocode_address(logradouro: str, numero: str, bairro: str,
+                      municipio: str, uf: str, cep: str = "") -> tuple:
+    """Geocodifica endereço do CNES via Google. Retorna (lat, lng) ou (None, None)."""
+    addr = ", ".join(p for p in [
+        f"{logradouro} {numero}".strip(), bairro, municipio, uf, "Brasil"
+    ] if p and str(p).strip() not in ("", "None"))
+    if not addr or addr == "Brasil":
+        return None, None
+    if addr in _geocode_cache:
+        return _geocode_cache[addr]
+    try:
+        resp = requests.get(
+            "https://maps.googleapis.com/maps/api/geocode/json",
+            params={"address": addr, "region": "br", "key": GOOGLE_API_KEY},
+            timeout=4,
+        )
+        results = resp.json().get("results", [])
+        if results:
+            loc = results[0]["geometry"]["location"]
+            result = (loc["lat"], loc["lng"])
+            _geocode_cache[addr] = result
+            return result
+    except Exception:
+        pass
+    _geocode_cache[addr] = (None, None)
+    return None, None
+
 
 def _get_phone_from_cnpj(cnpj: str) -> str:
     """BrasilAPI: telefone direto da Receita Federal pelo CNPJ."""
@@ -270,8 +299,11 @@ def _normalize_establishment(est: Dict, muni_row: pd.Series) -> Dict:
     category  = CATEGORY_MAP.get(tp, "outro")
     type_desc = UNIT_TYPES.get(tp, "Outro")
 
-    lat = est.get("latitude_estabelecimento_decimo_grau") or muni_row.get("latitude")
-    lng = est.get("longitude_estabelecimento_decimo_grau") or muni_row.get("longitude")
+    _lat_raw = est.get("latitude_estabelecimento_decimo_grau")
+    _lng_raw = est.get("longitude_estabelecimento_decimo_grau")
+    _coords_from_cnes = bool(_lat_raw and _lng_raw)
+    lat = _lat_raw or muni_row.get("latitude")
+    lng = _lng_raw or muni_row.get("longitude")
     try:
         lat = float(lat) if lat is not None else None
         lng = float(lng) if lng is not None else None
@@ -341,6 +373,7 @@ def _normalize_establishment(est: Dict, muni_row: pd.Series) -> Dict:
         "natureza_juridica":    _dec_nat(est.get("descricao_natureza_juridica_estabelecimento", "")),
         "turno_atendimento":    (est.get("descricao_turno_atendimento") or "").replace("ATENDIMENTO ", "").title(),
         "dt_atualizacao":       est.get("data_atualizacao", ""),
+        "coords_from_cnes":     _coords_from_cnes,
     }
 
 
@@ -398,6 +431,26 @@ def get_establishments_for_municipalities(
     df["score_potencial"] = df.apply(_calc_score, axis=1)
     df = df.dropna(subset=["latitude", "longitude"])
     df = df.sort_values("score_potencial", ascending=False).reset_index(drop=True)
+
+    # Geocodifica endereços dos estabelecimentos sem coordenadas CNES
+    no_coords = df.index[~df["coords_from_cnes"]].tolist()
+    if no_coords and progress_text_slot:
+        progress_text_slot.text(f"📍 Geocodificando {len(no_coords)} endereços via CNES…")
+
+    def _geo_worker(idx):
+        r = df.loc[idx]
+        lat, lng = _geocode_address(
+            str(r.get("no_logradouro","")), str(r.get("nu_endereco","")),
+            str(r.get("no_bairro","")),     str(r.get("municipio_nome","")),
+            str(r.get("uf","")),            str(r.get("co_cep",""))
+        )
+        return idx, lat, lng
+
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        for idx, lat, lng in ex.map(_geo_worker, no_coords):
+            if lat and lng:
+                df.at[idx, "latitude"]  = lat
+                df.at[idx, "longitude"] = lng
 
     # ── Telefone Google: só para quem NÃO tem telefone no CNES ─────────────
     # (se já tem no CNES, Google é redundante; assim reduz tempo de ~horas para ~30s)
