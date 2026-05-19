@@ -258,39 +258,36 @@ if search_btn:
             )
             establishments = establishments[mask]
 
-        # ── Busca urbana/bairro: filtra por distância real do ponto de origem ─
-        # O CSV tem 1 ponto por município — sem filtro, traz SP inteiro num raio de 5km.
-        # Para distâncias curtas filtramos pelos coords reais de cada estabelecimento.
-        if distance_km < 30 and not establishments.empty:
-            import math as _math
-            def _hav(lat1, lng1, lat2, lng2):
-                R = 6371.0
-                p1,p2 = _math.radians(lat1), _math.radians(lat2)
-                dp = _math.radians(lat2-lat1); dl = _math.radians(lng2-lng1)
-                a = _math.sin(dp/2)**2 + _math.cos(p1)*_math.cos(p2)*_math.sin(dl/2)**2
-                return R*2*_math.atan2(_math.sqrt(a), _math.sqrt(1-a))
-            _olat, _olng = origin["lat"], origin["lng"]
-            establishments["road_km"] = establishments.apply(
-                lambda r: round(_hav(_olat, _olng, float(r["latitude"]), float(r["longitude"])), 1),
-                axis=1
-            )
-            establishments = establishments[establishments["road_km"] <= distance_km]
+        # Modo urbano: não filtra por coordenada — CNES usa centroide do município
+        # como fallback para estabelecimentos sem GPS próprio, o que descartaria
+        # registros válidos. As rotas para top-15 já guiam o usuário geograficamente.
+        pass
 
     # ── Monta mapa ────────────────────────────────────────────────────────────
     # Para busca urbana, rotas vão para estabelecimentos top; para inter-cidades, municípios
     _urban = distance_km < 30
     if _urban and not establishments.empty:
-        # Modo urbano: usa coordenadas dos top-15 estabelecimentos como destinos
-        # de rota em vez de centros de município — Directions API traça ruas urbanas
         import pandas as _pd
-        _top = establishments.nlargest(min(15, len(establishments)), "score_potencial")
-        _munis_map = _pd.DataFrame({
-            "latitude":  _top["latitude"].values,
-            "longitude": _top["longitude"].values,
-            "nome":      _top["no_razao_social"].values,
-            "road_km":   _top["road_km"].values,
-        })
-        _routes_n = len(_munis_map)
+        # Usa só estabelecimentos com coordenadas ÚNICAS e distintas do centroide
+        # (muitos registros CNES usam o mesmo ponto — centroide do município)
+        _top = establishments.nlargest(min(50, len(establishments)), "score_potencial")
+        _top = _top.dropna(subset=["latitude","longitude"])
+        _top = _top.copy()
+        _top["_lat_r"] = _top["latitude"].astype(float).round(3)
+        _top["_lng_r"] = _top["longitude"].astype(float).round(3)
+        # Deduplica por coordenada arredondada — elimina destinos idênticos
+        _top = _top.drop_duplicates(subset=["_lat_r","_lng_r"]).head(15)
+        if not _top.empty:
+            _munis_map = _pd.DataFrame({
+                "latitude":  _top["latitude"].values,
+                "longitude": _top["longitude"].values,
+                "nome":      _top["no_razao_social"].values,
+                "road_km":   _top["road_km"].values,
+            })
+            _routes_n = len(_munis_map)
+        else:
+            _munis_map = municipalities
+            _routes_n  = 999
     else:
         _munis_map = municipalities
         _routes_n  = 999
@@ -355,6 +352,18 @@ if st.session_state.result_map is not None and st.session_state.get("show_result
 
     # ── Mapa full-width ──────────────────────────────────────────────────────
     st.markdown("#### 🗺️ Mapa de cobertura")
+
+    # Filtro de especialidade (afeta só o mapa)
+    _map_espec = st.multiselect(
+        "🔬 Especialidade no mapa",
+        options=['Cardiologia', 'Neurologia', 'Oncologia', 'Ortopedia', 'Pediatria', 'Ginecologia', 'Oftalmologia', 'Dermatologia', 'Psiquiatria', 'Endocrinologia', 'Nefrologia', 'Reumatologia', 'Gastroenterologia', 'Pneumologia', 'Urologia', 'Infectologia', 'Hematologia', 'Geriatria', 'Nutrologia', 'Fisioterapia'],
+        default=[],
+        placeholder="Todas as especialidades",
+        key="map_espec",
+        help="Filtra os marcadores no mapa por especialidade.",
+    )
+
+    # Filtro de potencial
     _c1, _c2, _c3, _c4 = st.columns([2, 1, 1, 1])
     with _c1:
         st.caption("Filtrar por potencial:")
@@ -373,13 +382,26 @@ if st.session_state.result_map is not None and st.session_state.get("show_result
         if _fm: _mk.append((_est_map["score_potencial"] >= 40) & (_est_map["score_potencial"] < 60))
         if _fb: _mk.append(_est_map["score_potencial"] < 40)
         _est_map = _est_map[functools.reduce(_op.or_, _mk)] if _mk else _est_map.iloc[0:0]
+    if _map_espec:
+        import re as _re2
+        _pat2 = "|".join(_re2.escape(e) for e in _map_espec)
+        _emask = (
+            _est_map["no_razao_social"].str.contains(_pat2, case=False, na=False) |
+            _est_map["no_fantasia"].str.contains(_pat2, case=False, na=False) |
+            _est_map["ds_tipo_unidade"].str.contains(_pat2, case=False, na=False)
+        )
+        _est_map = _est_map[_emask]
 
     with st.spinner("🗺️ Atualizando mapa…"):
         from map_builder import build_map as _bm
         _urban2 = distance_km < 30
         if _urban2 and not _est_map.empty:
             import pandas as _pd2
-            _top2 = _est_map.nlargest(min(15, len(_est_map)), "score_potencial")
+            _top2 = _est_map.nlargest(min(50, len(_est_map)), "score_potencial")
+            _top2 = _top2.dropna(subset=["latitude","longitude"]).copy()
+            _top2["_lr"] = _top2["latitude"].astype(float).round(3)
+            _top2["_lgr"] = _top2["longitude"].astype(float).round(3)
+            _top2 = _top2.drop_duplicates(subset=["_lr","_lgr"]).head(15)
             _mm2 = _pd2.DataFrame({
                 "latitude":  _top2["latitude"].values,
                 "longitude": _top2["longitude"].values,
