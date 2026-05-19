@@ -87,19 +87,39 @@ def _yn_str(v: str) -> str:
 _google_phone_cache: Dict[str, str] = {}
 
 def _get_google_phone(name: str, city: str) -> str:
+    """Busca telefone no Google Places em 2 passos: findplace → place_id → details."""
     key = f"{name}|{city}"
     if key in _google_phone_cache:
         return _google_phone_cache[key]
+    phone = ""
     try:
-        url = "https://maps.googleapis.com/maps/api/place/findplacefromtext/json"
-        params = {
-            "input":     f"{name} {city} Brasil",
-            "inputtype": "textquery",
-            "fields":    "formatted_phone_number",
-            "key":       GOOGLE_API_KEY,
-        }
-        resp = requests.get(url, params=params, timeout=6)
-        phone = (resp.json().get("candidates") or [{}])[0].get("formatted_phone_number", "") or ""
+        # Passo 1: acha o place_id
+        r1 = requests.get(
+            "https://maps.googleapis.com/maps/api/place/findplacefromtext/json",
+            params={
+                "input":       f"{name} {city}",
+                "inputtype":   "textquery",
+                "fields":      "place_id",
+                "locationbias": "country:BR",
+                "key":         GOOGLE_API_KEY,
+            },
+            timeout=6,
+        )
+        candidates = r1.json().get("candidates", [])
+        place_id = candidates[0].get("place_id", "") if candidates else ""
+
+        if place_id:
+            # Passo 2: busca telefone nos detalhes do lugar
+            r2 = requests.get(
+                "https://maps.googleapis.com/maps/api/place/details/json",
+                params={
+                    "place_id": place_id,
+                    "fields":   "formatted_phone_number",
+                    "key":      GOOGLE_API_KEY,
+                },
+                timeout=6,
+            )
+            phone = r2.json().get("result", {}).get("formatted_phone_number", "") or ""
     except Exception:
         phone = ""
     _google_phone_cache[key] = phone
@@ -172,7 +192,7 @@ def _calc_score(row: pd.Series) -> int:
                       _sb(row.get("tem_obstetrico")) +
                       _sb(row.get("atend_ambulatorial"))) * 3)
 
-    # 4. Gestão — aceita código bruto ("M") ou decodificado ("Municipal")
+    # 4. Gestão — aceita código ("M") ou decodificado ("Municipal")
     gestao = str(row.get("tp_gestao", "")).upper()
     if any(x in gestao for x in ("ESTADUAL", "FEDERAL", "SEM GEST")):
         score += 10

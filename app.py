@@ -231,19 +231,20 @@ if st.session_state.result_map is not None:
     summary        = summarize_establishments(establishments)
 
     # ── Métricas principais ───────────────────────────────────────────────────
-    n_corredor = len(municipalities)            # total no corredor rodoviário
-    n_com_cnes = summary.get("municipios", 0)  # municípios com dados CNES
+    n_corredor = len(municipalities)
+    n_com_cnes = summary.get("municipios", 0)
+    delta_muni = f"{n_com_cnes} com dados CNES" if n_com_cnes < n_corredor else "Todos com dados CNES"
 
     cols = st.columns(8)
     metrics = [
-        ("🏙️ Municípios",    n_corredor,                        f"{n_com_cnes} com dados CNES"),
-        ("🏥 Hospitais",      summary.get("hospitais",      0),   None),
-        ("🏨 Clínicas",       summary.get("clinicas",       0),   None),
-        ("🚨 UPAs",           summary.get("upas",           0),   None),
-        ("💊 Farmácias",      summary.get("farmacias",      0),   None),
-        ("🩺 UBS / Postos",   summary.get("ubs",            0),   None),
-        ("🏢 Outros",         summary.get("outros",         0),   None),
-        ("⭐ Alto potencial", summary.get("alto_potencial", 0),   None),
+        ("🏙️ Municípios",    n_corredor,                        delta_muni),
+        ("🏥 Hospitais",      summary.get("hospitais",      0),  None),
+        ("🏨 Clínicas",       summary.get("clinicas",       0),  None),
+        ("🚨 UPAs",           summary.get("upas",           0),  None),
+        ("💊 Farmácias",      summary.get("farmacias",      0),  None),
+        ("🩺 UBS / Postos",   summary.get("ubs",            0),  None),
+        ("🏢 Outros",         summary.get("outros",         0),  None),
+        ("⭐ Alto potencial", summary.get("alto_potencial", 0),  None),
     ]
     for col, (label, val, delta) in zip(cols, metrics):
         col.metric(label, f"{val:,}", delta=delta)
@@ -288,9 +289,7 @@ if st.session_state.result_map is not None:
             "dt_atualizacao":     "Atualização",
         }
         _drop = ["latitude","longitude","category","tp_unidade","tp_pfpj",
-                 "qt_leito_internacao","qt_leito_sus","atend_ambulatorial",
-                 "nu_telefone",          # coluna antiga — nova é nu_telefone_cnes
-                 "ds_natureza_juridica"] # coluna antiga — nova é natureza_juridica
+                 "qt_leito_internacao","qt_leito_sus","atend_ambulatorial","nu_telefone", "ds_natureza_juridica"]
 
         c1, c2, c3 = st.columns([3, 1, 1])
         with c1:

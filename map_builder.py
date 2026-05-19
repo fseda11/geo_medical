@@ -188,8 +188,8 @@ def build_map(
 
                 score = est.get("score_potencial", 0)
                 icon_color = (
-                    "red"     if score >= 60 else
-                    "orange"  if score >= 35 else
+                    "green"    if score >= 60 else
+                    "orange"   if score >= 35 else
                     "lightgray"
                 )
 
@@ -225,15 +225,15 @@ def build_map(
                 box-shadow:0 2px 10px rgba(0,0,0,.2);font-family:Arial;font-size:12px;color:#222 !important;
                 color:#222 !important;">
       <b style="display:block;margin-bottom:8px;color:#222">Potencial de Alto Custo</b>
-      <div><span style="background:#4CAF50;color:#fff;padding:2px 8px;
-                        border-radius:10px;margin-right:6px">≥ 60</span> Alto</div>
+      <div><span style="background:#2E7D32;color:#fff;padding:2px 8px;
+                        border-radius:10px;margin-right:6px">≥ 60</span> 🟢 Alto</div>
       <div style="margin-top:4px">
         <span style="background:#FF9800;color:#fff;padding:2px 8px;
-                     border-radius:10px;margin-right:6px">35–59</span> Médio
+                     border-radius:10px;margin-right:6px">35–59</span> 🟠 Médio
       </div>
       <div style="margin-top:4px">
         <span style="background:#9E9E9E;color:#fff;padding:2px 8px;
-                     border-radius:10px;margin-right:6px">&lt; 35</span> Baixo
+                     border-radius:10px;margin-right:6px">&lt; 35</span> ⚫ Baixo
       </div>
       <hr style="margin:8px 0;border-color:#eee">
       <b style="display:block;margin-bottom:6px;color:#222">Distância rodoviária</b>
