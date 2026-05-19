@@ -282,10 +282,11 @@ if search_btn:
     with st.spinner("🗺️ Construindo mapa…"):
         fmap = build_map(
             origin=origin,
-            municipalities=municipalities if not _urban else municipalities.iloc[0:0],
+            municipalities=municipalities,
             establishments=establishments,
             max_km=distance_km,
-            draw_routes_to=0 if _urban else 999,
+            draw_routes_to=999,
+            urban_mode=_urban,
         )
 
     # Salva na sessão
@@ -360,10 +361,11 @@ if st.session_state.result_map is not None and st.session_state.get("show_result
         _urban2 = distance_km < 30
         _fmap_f = _bm(
             origin=st.session_state.origin_data,
-            municipalities=st.session_state.result_munis if not _urban2 else st.session_state.result_munis.iloc[0:0],
+            municipalities=st.session_state.result_munis,
             establishments=_est_map,
             max_km=distance_km,
-            draw_routes_to=0 if _urban2 else 999,
+            draw_routes_to=999,
+            urban_mode=_urban2,
         )
     st.caption("💡 Controle de camadas ▶ (canto superior direito) para ativar/desativar categorias.")
     st_folium(_fmap_f, use_container_width=True, height=640, returned_objects=[])
