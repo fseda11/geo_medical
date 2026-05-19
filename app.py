@@ -234,6 +234,7 @@ if st.session_state.result_map is not None:
     n_corredor = len(municipalities)
     n_com_cnes = summary.get("municipios", 0)
     delta_muni = f"{n_com_cnes} com dados CNES" if n_com_cnes < n_corredor else "Todos com dados CNES"
+
     cols = st.columns(8)
     metrics = [
         ("🏙️ Municípios",    n_corredor,                        delta_muni),
@@ -340,24 +341,6 @@ if st.session_state.result_map is not None:
                          use_container_width=True, height=350, hide_index=True)
             st.caption(f"{len(municipalities)} municípios · {distance_km} km por rodovias")
 
-
-else:
-    st.info("👈 **Configure a busca** na barra lateral e clique em **Buscar estabelecimentos**.", icon="🗺️")
-    st.markdown("""
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:20px">
-      <div style="background:#E3F2FD;padding:20px;border-radius:10px;border-left:4px solid #1565C0">
-        <h4 style="margin:0;color:#1565C0">🛣️ Rotas reais</h4>
-        <p style="margin:8px 0 0;color:#555;font-size:14px">Distâncias por Google Distance Matrix — rodovias reais, não raio simples. Filtro de corredor garante municípios ao longo das estradas.</p>
-      </div>
-      <div style="background:#E8F5E9;padding:20px;border-radius:10px;border-left:4px solid #2E7D32">
-        <h4 style="margin:0;color:#2E7D32">🏥 Dados CNES/DATASUS</h4>
-        <p style="margin:8px 0 0;color:#555;font-size:14px">Estabelecimentos registrados com tipo, endereço, turno e gestão. Telefones complementados via Google Places API.</p>
-      </div>
-      <div style="background:#FFF3E0;padding:20px;border-radius:10px;border-left:4px solid #E65100">
-        <h4 style="margin:0;color:#E65100">⭐ Score de potencial</h4>
-        <p style="margin:8px 0 0;color:#555;font-size:14px">Prioriza hospitais, farmácias e clínicas com maior potencial de consumo de medicamentos de alto custo.</p>
-      </div>
-    </div>""", unsafe_allow_html=True)
 
 # ── Rodapé ────────────────────────────────────────────────────────────────────
 st.markdown(

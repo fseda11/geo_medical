@@ -163,7 +163,7 @@ def _calc_score(row: pd.Series) -> int:
     elif leitos_proxy >= 25:  score += 10
     elif leitos_proxy > 0:    score += 5
 
-    # 3. Serviços adicionais (0–10)
+    # 3. Serviços adicionais (0–10) — suporta "Sim"/"Não" ou 0/1
     def _sb(v):
         if isinstance(v, str): return 1 if v.strip().lower() == "sim" else 0
         try: return int(v or 0)
@@ -172,7 +172,7 @@ def _calc_score(row: pd.Series) -> int:
                       _sb(row.get("tem_obstetrico")) +
                       _sb(row.get("atend_ambulatorial"))) * 3)
 
-    # 4. Gestão — aceita "M" ou "Municipal"
+    # 4. Gestão — aceita código ("M") ou decodificado ("Municipal")
     gestao = str(row.get("tp_gestao", "")).upper()
     if any(x in gestao for x in ("ESTADUAL", "FEDERAL", "SEM GEST")):
         score += 10
@@ -353,8 +353,9 @@ def summarize_establishments(df: pd.DataFrame) -> Dict:
         "upas":             (df["category"] == "upa").sum(),
         "farmacias":        (df["category"] == "farmacia").sum(),
         "ubs":              (df["category"] == "ubs").sum(),
+        "outros":           (df["category"] == "outro").sum(),
         "total_leitos":     int(df["qt_leito_internacao"].sum()),
         "total_leitos_sus": int(df["qt_leito_sus"].sum()),
-        "alto_potencial":   (df["score_potencial"] >= 30).sum(),
+        "alto_potencial":   (df["score_potencial"] >= 40).sum(),
         "score_medio":      round(df["score_potencial"].mean(), 1),
     }

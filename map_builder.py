@@ -145,90 +145,113 @@ def build_map(
 
     route_layer.add_to(m)
 
-    # ── Estabelecimentos — cluster único com cor dinâmica por score médio ────
+    # ── Estabelecimentos de saúde (clusters por categoria) ────────────────────
     if not establishments.empty:
+        # Clusters separados por categoria para controle de camadas
+        categories = establishments["category"].unique()
 
-        # icon_create_function lê data-score de cada marker filho,
-        # calcula a média e pinta o cluster de acordo.
-        icon_create_fn = """
-        function(cluster) {
-            var children = cluster.getAllChildMarkers();
-            var total = 0, count = 0;
-            children.forEach(function(m) {
-                var el = m.options.icon.options.html.match(/data-score="([0-9]+)"/);
-                var s = el ? parseInt(el[1]) : 0;
-                total += s; count++;
-            });
-            var avg = count > 0 ? total / count : 0;
-            var bg, border;
-            if      (avg >= 60) { bg="#1B5E20"; border="#2E7D32"; }
-            else if (avg >= 40) { bg="#E65100"; border="#F57C00"; }
-            else if (avg >= 25) { bg="#F9A825"; border="#FBC02D"; }
-            else                { bg="#424242"; border="#757575"; }
-            return L.divIcon({
-                html: '<div style="background:'+bg+';border:3px solid '+border+
-                      ';color:#fff;border-radius:50%;width:36px;height:36px;'+
-                      'display:flex;align-items:center;justify-content:center;'+
-                      'font-weight:bold;font-size:13px;">'+cluster.getChildCount()+'</div>',
-                className: '',
-                iconSize: L.point(36, 36)
-            });
-        }
-        """
+        for cat in categories:
+            cat_df = establishments[establishments["category"] == cat]
+            color_hex = CATEGORY_COLORS.get(cat, "#757575")
+            icon_emoji = CATEGORY_ICONS.get(cat, "🏢")
 
-        cluster = MarkerCluster(
-            name="🏥 Estabelecimentos",
-            show=True,
-            icon_create_function=icon_create_fn,
-            options={
-                "spiderfyOnMaxZoom": True,
-                "showCoverageOnHover": False,
-                "maxClusterRadius": 60,
-                "disableClusteringAtZoom": 14,
-            },
-        )
+            # Nome amigável para o controle de camadas
+            cat_label = {
+                "hospital": "🏥 Hospitais",
+                "upa": "🚨 UPAs / Pronto-Socorros",
+                "clinica": "🏨 Clínicas / Especialidades",
+                "farmacia": "💊 Farmácias",
+                "ubs": "🩺 UBS / Postos",
+                "outro": "🏢 Outros",
+            }.get(cat, cat.capitalize())
 
-        for _, est in establishments.iterrows():
-            lat = est.get("latitude")
-            lng = est.get("longitude")
-            if lat is None or lng is None:
-                continue
-            try:
-                lat, lng = float(lat), float(lng)
-            except Exception:
-                continue
-
-            score = est.get("score_potencial", 0)
-            cat   = est.get("category", "outro")
-            color = CATEGORY_COLORS.get(cat, "#757575")
-            icon  = CATEGORY_ICONS.get(cat, "🏢")
-
-            # divIcon com data-score para o icon_create_function ler
-            div_html = (
-                f'<div data-score="{score}" style="'
-                f'background:{color};border:2px solid rgba(0,0,0,.3);'
-                f'color:#fff;border-radius:50%;width:28px;height:28px;'
-                f'display:flex;align-items:center;justify-content:center;'
-                f'font-size:14px;">{icon}</div>'
+            cluster = MarkerCluster(
+                name=cat_label,
+                show=True,
+                icon_create_function="""function(cluster) {
+    var children = cluster.getAllChildMarkers();
+    var total = 0, count = 0;
+    children.forEach(function(m) {
+        var html = m.options.icon && m.options.icon.options ? m.options.icon.options.html : '';
+        var match = html ? html.match(/data-score="([0-9]+)"/) : null;
+        if (match) { total += parseInt(match[1]); count++; }
+    });
+    var avg = count > 0 ? total / count : 0;
+    var bg, bd;
+    if      (avg >= 60) { bg='#1B5E20'; bd='#2E7D32'; }
+    else if (avg >= 40) { bg='#E65100'; bd='#F57C00'; }
+    else if (avg >= 25) { bg='#F57F17'; bd='#F9A825'; }
+    else                { bg='#37474F'; bd='#546E7A'; }
+    return L.divIcon({
+        html: '<div style="background:'+bg+';border:3px solid '+bd+
+              ';color:#fff;border-radius:50%;width:36px;height:36px;'+
+              'display:flex;align-items:center;justify-content:center;'+
+              'font-weight:bold;font-size:13px;">'+cluster.getChildCount()+'</div>',
+        className:'', iconSize: L.point(36,36)
+    });
+}""",
+                options={
+                    "spiderfyOnMaxZoom": True,
+                    "showCoverageOnHover": False,
+                    "maxClusterRadius": 60,
+                    "disableClusteringAtZoom": 14,
+                },
             )
 
-            folium.Marker(
-                location=[lat, lng],
-                popup=folium.Popup(_popup_html(est), max_width=300),
-                tooltip=folium.Tooltip(
-                    f"<b>{est.get('no_razao_social','Estabelecimento')}</b><br>"
-                    f"{est.get('ds_tipo_unidade','—')} · {est.get('municipio_nome','—')}<br>"
-                    f"⭐ Score: {score}",
-                    sticky=True,
-                ),
-                icon=folium.DivIcon(
-                    html=div_html,
-                    icon_size=(28, 28),
-                    icon_anchor=(14, 14),
-                ),
-            ).add_to(cluster)
+            for _, est in cat_df.iterrows():
+                lat = est.get("latitude")
+                lng = est.get("longitude")
+                if lat is None or lng is None:
+                    continue
+                try:
+                    lat, lng = float(lat), float(lng)
+                except Exception:
+                    continue
 
-        cluster.add_to(m)
+                score = est.get("score_potencial", 0)
+                # Cor do marker individual baseada no score
+                if score >= 60:   mc = "#2E7D32"
+                elif score >= 40: mc = "#E65100"
+                elif score >= 25: mc = "#F9A825"
+                else:             mc = "#546E7A"
+
+                # Nome preferencial: fantasia > razao_social
+                nome = (est.get("no_fantasia") or est.get("no_razao_social") or "Estabelecimento").strip()
+                tipo  = est.get("ds_tipo_unidade", "—")
+                muni  = est.get("municipio_nome", "—")
+                uf    = est.get("uf", "")
+                dist  = est.get("road_km", "—")
+                tel_c = est.get("nu_telefone_cnes") or "—"
+                tel_g = est.get("nu_telefone_google") or "—"
+
+                # divIcon com data-score para icon_create_function calcular média
+                div_html = (
+                    f'<div data-score="{score}" style="'
+                    f'background:{mc};border:2px solid rgba(0,0,0,.25);'
+                    f'color:#fff;border-radius:50%;width:26px;height:26px;'
+                    f'display:flex;align-items:center;justify-content:center;'
+                    f'font-size:12px;">{CATEGORY_ICONS.get(cat,"🏢")}</div>'
+                )
+
+                tooltip_html = (
+                    f"<div style='font-family:Arial;font-size:13px;min-width:220px'>"
+                    f"<b>{nome}</b><br>"
+                    f"<span style='color:#888'>{tipo}</span><br>"
+                    f"📍 {muni}{' / '+uf if uf else ''} · {dist} km<br>"
+                    f"📞 {tel_c}"
+                    f"{' &nbsp;|&nbsp; 🔍 '+tel_g if tel_g != '—' else ''}<br>"
+                    f"<b style='color:{mc}'>⭐ Score {score}/100</b>"
+                    f"</div>"
+                )
+
+                folium.Marker(
+                    location=[lat, lng],
+                    popup=folium.Popup(_popup_html(est), max_width=300),
+                    tooltip=folium.Tooltip(tooltip_html, sticky=True),
+                    icon=folium.DivIcon(html=div_html, icon_size=(26,26), icon_anchor=(13,13)),
+                ).add_to(cluster)
+
+            cluster.add_to(m)
 
     # ── Marcador de origem ────────────────────────────────────────────────────
     folium.Marker(
