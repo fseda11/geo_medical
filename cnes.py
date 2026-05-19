@@ -87,29 +87,35 @@ def _yn_str(v: str) -> str:
 _google_phone_cache: Dict[str, str] = {}
 
 def _get_google_phone(name: str, city: str) -> str:
-    """Busca telefone em 2 passos: findplace → place_id → place details."""
+    """Busca telefone: tenta em 1 chamada, faz 2ª só se necessário."""
     key = f"{name}|{city}"
     if key in _google_phone_cache:
         return _google_phone_cache[key]
     phone = ""
     try:
+        # Tenta pegar place_id + phone em uma única chamada
         r1 = requests.get(
             "https://maps.googleapis.com/maps/api/place/findplacefromtext/json",
             params={"input": f"{name} {city}", "inputtype": "textquery",
-                    "fields": "place_id", "locationbias": "country:BR",
-                    "key": GOOGLE_API_KEY},
-            timeout=6,
+                    "fields": "place_id,formatted_phone_number",
+                    "locationbias": "country:BR", "key": GOOGLE_API_KEY},
+            timeout=3,
         )
-        candidates = r1.json().get("candidates", [])
-        place_id = candidates[0].get("place_id", "") if candidates else ""
-        if place_id:
-            r2 = requests.get(
-                "https://maps.googleapis.com/maps/api/place/details/json",
-                params={"place_id": place_id, "fields": "formatted_phone_number",
-                        "key": GOOGLE_API_KEY},
-                timeout=6,
-            )
-            phone = r2.json().get("result", {}).get("formatted_phone_number", "") or ""
+        data1 = r1.json()
+        candidate = (data1.get("candidates") or [{}])[0]
+        phone = candidate.get("formatted_phone_number", "") or ""
+        # Se não veio phone na 1ª chamada, tenta Place Details com o place_id
+        if not phone:
+            place_id = candidate.get("place_id", "")
+            if place_id:
+                r2 = requests.get(
+                    "https://maps.googleapis.com/maps/api/place/details/json",
+                    params={"place_id": place_id,
+                            "fields": "formatted_phone_number",
+                            "key": GOOGLE_API_KEY},
+                    timeout=3,
+                )
+                phone = r2.json().get("result", {}).get("formatted_phone_number", "") or ""
     except Exception:
         phone = ""
     _google_phone_cache[key] = phone
@@ -128,11 +134,11 @@ def _fetch_cnes_municipality(co_municipio: str) -> List[Dict]:
     offset = 0
     max_pages = 30  # segurança contra loop infinito
 
-    for page in range(max_pages):
+    for _ in range(max_pages):
         params = {
             "codigo_municipio": co_municipio,
             "limit": CNES_PAGE_SIZE,
-            "offset": page * CNES_PAGE_SIZE,
+            "offset": offset,
         }
         try:
             resp = requests.get(url, params=params, timeout=15)
@@ -143,17 +149,14 @@ def _fetch_cnes_municipality(co_municipio: str) -> List[Dict]:
             if not items:
                 break
             all_items.extend(items)
+            if len(items) < CNES_PAGE_SIZE:
+                break
+            offset += CNES_PAGE_SIZE
             time.sleep(0.05)
         except Exception:
             break
 
-    # Remove duplicatas por codigo_cnes
-    seen, unique = set(), []
-    for item in all_items:
-        k = item.get("codigo_cnes")
-        if k not in seen:
-            seen.add(k); unique.append(item)
-    return unique
+    return all_items
 
 
 # ── Score de potencial ────────────────────────────────────────────────────────
@@ -332,7 +335,7 @@ def get_establishments_for_municipalities(
     df = df.dropna(subset=["latitude", "longitude"])
     df = df.sort_values("score_potencial", ascending=False).reset_index(drop=True)
 
-    # ── Telefone Google para TODOS ───────────────────────────────────────────
+    # ── Telefone Google para todos ───────────────────────────────────────────
     targets = df.index.tolist()
 
     if targets and progress_text_slot:
@@ -342,7 +345,7 @@ def get_establishments_for_municipalities(
         row = df.loc[idx]
         return idx, _get_google_phone(row.get("no_razao_social",""), row.get("municipio_nome",""))
 
-    with ThreadPoolExecutor(max_workers=5) as ex:
+    with ThreadPoolExecutor(max_workers=20) as ex:
         for idx, phone in ex.map(_phone_worker, targets):
             df.at[idx, "nu_telefone_google"] = phone
 
