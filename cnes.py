@@ -352,7 +352,8 @@ def get_establishments_for_municipalities(
 
     def _phone_worker(idx):
         row = df.loc[idx]
-        return idx, _get_google_phone(row.get("no_razao_social",""), row.get("municipio_nome",""))
+        nome = (row.get("no_fantasia") or row.get("no_razao_social") or "").strip()
+        return idx, _get_google_phone(nome, row.get("municipio_nome",""))
 
     with ThreadPoolExecutor(max_workers=20) as ex:
         for idx, phone in ex.map(_phone_worker, targets):
