@@ -258,14 +258,34 @@ if search_btn:
             )
             establishments = establishments[mask]
 
+        # ── Busca urbana/bairro: filtra por distância real do ponto de origem ─
+        # O CSV tem 1 ponto por município — sem filtro, traz SP inteiro num raio de 5km.
+        # Para distâncias curtas filtramos pelos coords reais de cada estabelecimento.
+        if distance_km < 30 and not establishments.empty:
+            import math as _math
+            def _hav(lat1, lng1, lat2, lng2):
+                R = 6371.0
+                p1,p2 = _math.radians(lat1), _math.radians(lat2)
+                dp = _math.radians(lat2-lat1); dl = _math.radians(lng2-lng1)
+                a = _math.sin(dp/2)**2 + _math.cos(p1)*_math.cos(p2)*_math.sin(dl/2)**2
+                return R*2*_math.atan2(_math.sqrt(a), _math.sqrt(1-a))
+            _olat, _olng = origin["lat"], origin["lng"]
+            establishments["road_km"] = establishments.apply(
+                lambda r: round(_hav(_olat, _olng, float(r["latitude"]), float(r["longitude"])), 1),
+                axis=1
+            )
+            establishments = establishments[establishments["road_km"] <= distance_km]
+
     # ── Monta mapa ────────────────────────────────────────────────────────────
+    # Para busca urbana, rotas vão para estabelecimentos top; para inter-cidades, municípios
+    _urban = distance_km < 30
     with st.spinner("🗺️ Construindo mapa…"):
         fmap = build_map(
             origin=origin,
-            municipalities=municipalities,
+            municipalities=municipalities if not _urban else municipalities.iloc[0:0],
             establishments=establishments,
             max_km=distance_km,
-            draw_routes_to=999,  # traça rotas para todos os municípios (cacheadas)
+            draw_routes_to=0 if _urban else 999,
         )
 
     # Salva na sessão
@@ -337,12 +357,13 @@ if st.session_state.result_map is not None and st.session_state.get("show_result
 
     with st.spinner("🗺️ Atualizando mapa…"):
         from map_builder import build_map as _bm
+        _urban2 = distance_km < 30
         _fmap_f = _bm(
             origin=st.session_state.origin_data,
-            municipalities=st.session_state.result_munis,
+            municipalities=st.session_state.result_munis if not _urban2 else st.session_state.result_munis.iloc[0:0],
             establishments=_est_map,
             max_km=distance_km,
-            draw_routes_to=999,
+            draw_routes_to=0 if _urban2 else 999,
         )
     st.caption("💡 Controle de camadas ▶ (canto superior direito) para ativar/desativar categorias.")
     st_folium(_fmap_f, use_container_width=True, height=640, returned_objects=[])
