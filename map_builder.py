@@ -35,8 +35,9 @@ def _popup_html(est: dict) -> str:
 
     leitos     = est.get("qt_leito_internacao") or "—"
     leitos_sus = est.get("qt_leito_sus") or "—"
-    telefone   = est.get("nu_telefone") or "—"
-    gestao     = est.get("tp_pfpj") or "—"
+    telefone   = est.get("nu_telefone_cnes") or est.get("nu_telefone") or "—"
+    tel_google = est.get("nu_telefone_google") or ""
+    gestao     = est.get("tp_gestao") or est.get("tp_pfpj") or "—"
     duration   = est.get("duration_text") or "—"
 
     return f"""
@@ -61,8 +62,10 @@ def _popup_html(est: dict) -> str:
               <td>{leitos} total / {leitos_sus} SUS</td></tr>
           <tr><td style="color:#888;padding:2px 0">Gestão</td>
               <td>{gestao}</td></tr>
-          <tr><td style="color:#888;padding:2px 0">Telefone</td>
+          <tr><td style="color:#888;padding:2px 0">Tel. CNES</td>
               <td>{telefone}</td></tr>
+          <tr><td style="color:#888;padding:2px 0">Tel. Google</td>
+              <td>{tel_google or "—"}</td></tr>
         </table>
         <div style="margin-top:8px;text-align:right">
           <span style="background:{score_color};color:#fff;padding:3px 8px;
@@ -140,7 +143,7 @@ def build_map(
                     weight=3,
                     color="#1565C0",
                     opacity=0.55,
-                    tooltip=f"Rota → {muni.get('nome','')} ({muni.get('road_km','')} km)",
+                    tooltip=None,
                 ).add_to(route_layer)
 
     route_layer.add_to(m)
@@ -210,10 +213,10 @@ def build_map(
 
                 score = est.get("score_potencial", 0)
                 # Cor do marker individual baseada no score
-                if score >= 60:   mc = "#2E7D32"
-                elif score >= 40: mc = "#E65100"
-                elif score >= 25: mc = "#F9A825"
-                else:             mc = "#546E7A"
+                if score >= 60:   mc = "#1B5E20"  # verde escuro
+                elif score >= 40: mc = "#E65100"  # laranja
+                elif score >= 25: mc = "#F9A825"  # amarelo
+                else:             mc = "#546E7A"  # cinza
 
                 # Nome preferencial: fantasia > razao_social
                 nome = (est.get("no_fantasia") or est.get("no_razao_social") or "Estabelecimento").strip()
@@ -272,15 +275,15 @@ def build_map(
                 box-shadow:0 2px 10px rgba(0,0,0,.2);font-family:Arial;font-size:12px;color:#222 !important;
                 color:#222 !important;">
       <b style="display:block;margin-bottom:8px;color:#222">Potencial de Alto Custo</b>
-      <div><span style="background:#4CAF50;color:#fff;padding:2px 8px;
+      <div><span style="background:#1B5E20;color:#fff;padding:2px 8px;
                         border-radius:10px;margin-right:6px">≥ 60</span> Alto</div>
       <div style="margin-top:4px">
-        <span style="background:#FF9800;color:#fff;padding:2px 8px;
-                     border-radius:10px;margin-right:6px">35–59</span> Médio
+        <span style="background:#E65100;color:#fff;padding:2px 8px;
+                     border-radius:10px;margin-right:6px">40–59</span> Médio
       </div>
       <div style="margin-top:4px">
-        <span style="background:#9E9E9E;color:#fff;padding:2px 8px;
-                     border-radius:10px;margin-right:6px">&lt; 35</span> Baixo
+        <span style="background:#546E7A;color:#fff;padding:2px 8px;
+                     border-radius:10px;margin-right:6px">&lt; 40</span> Baixo
       </div>
       <hr style="margin:8px 0;border-color:#eee">
       <b style="display:block;margin-bottom:6px;color:#222">Distância rodoviária</b>

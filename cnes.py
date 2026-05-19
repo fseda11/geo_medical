@@ -87,19 +87,29 @@ def _yn_str(v: str) -> str:
 _google_phone_cache: Dict[str, str] = {}
 
 def _get_google_phone(name: str, city: str) -> str:
+    """Busca telefone em 2 passos: findplace → place_id → place details."""
     key = f"{name}|{city}"
     if key in _google_phone_cache:
         return _google_phone_cache[key]
+    phone = ""
     try:
-        url = "https://maps.googleapis.com/maps/api/place/findplacefromtext/json"
-        params = {
-            "input":     f"{name} {city} Brasil",
-            "inputtype": "textquery",
-            "fields":    "formatted_phone_number",
-            "key":       GOOGLE_API_KEY,
-        }
-        resp = requests.get(url, params=params, timeout=6)
-        phone = (resp.json().get("candidates") or [{}])[0].get("formatted_phone_number", "") or ""
+        r1 = requests.get(
+            "https://maps.googleapis.com/maps/api/place/findplacefromtext/json",
+            params={"input": f"{name} {city}", "inputtype": "textquery",
+                    "fields": "place_id", "locationbias": "country:BR",
+                    "key": GOOGLE_API_KEY},
+            timeout=6,
+        )
+        candidates = r1.json().get("candidates", [])
+        place_id = candidates[0].get("place_id", "") if candidates else ""
+        if place_id:
+            r2 = requests.get(
+                "https://maps.googleapis.com/maps/api/place/details/json",
+                params={"place_id": place_id, "fields": "formatted_phone_number",
+                        "key": GOOGLE_API_KEY},
+                timeout=6,
+            )
+            phone = r2.json().get("result", {}).get("formatted_phone_number", "") or ""
     except Exception:
         phone = ""
     _google_phone_cache[key] = phone
@@ -118,11 +128,11 @@ def _fetch_cnes_municipality(co_municipio: str) -> List[Dict]:
     offset = 0
     max_pages = 30  # segurança contra loop infinito
 
-    for _ in range(max_pages):
+    for page in range(max_pages):
         params = {
             "codigo_municipio": co_municipio,
             "limit": CNES_PAGE_SIZE,
-            "offset": offset,
+            "offset": page * CNES_PAGE_SIZE,
         }
         try:
             resp = requests.get(url, params=params, timeout=15)
@@ -133,14 +143,17 @@ def _fetch_cnes_municipality(co_municipio: str) -> List[Dict]:
             if not items:
                 break
             all_items.extend(items)
-            if len(items) < CNES_PAGE_SIZE:
-                break
-            offset += CNES_PAGE_SIZE
             time.sleep(0.05)
         except Exception:
             break
 
-    return all_items
+    # Remove duplicatas por codigo_cnes
+    seen, unique = set(), []
+    for item in all_items:
+        k = item.get("codigo_cnes")
+        if k not in seen:
+            seen.add(k); unique.append(item)
+    return unique
 
 
 # ── Score de potencial ────────────────────────────────────────────────────────
@@ -319,10 +332,8 @@ def get_establishments_for_municipalities(
     df = df.dropna(subset=["latitude", "longitude"])
     df = df.sort_values("score_potencial", ascending=False).reset_index(drop=True)
 
-    # ── Telefone Google: só para alto potencial (score ≥ 40) sem tel CNES ─────
-    alto = df["score_potencial"] >= 40
-    sem_tel = df["nu_telefone_cnes"].str.strip().eq("") | df["nu_telefone_cnes"].isna()
-    targets = df.index[alto | sem_tel].tolist()
+    # ── Telefone Google para TODOS ───────────────────────────────────────────
+    targets = df.index.tolist()
 
     if targets and progress_text_slot:
         progress_text_slot.text(f"📞 Buscando telefones no Google para {len(targets)} estabelecimentos…")

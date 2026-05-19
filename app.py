@@ -250,7 +250,6 @@ if st.session_state.result_map is not None:
         col.metric(label, f"{val:,}", delta=delta)
 
     st.markdown("---")
-    st.markdown("---")
 
     # ── Mapa full-width ──────────────────────────────────────────────────────
     st.markdown("#### 🗺️ Mapa de cobertura")
@@ -289,7 +288,8 @@ if st.session_state.result_map is not None:
             "dt_atualizacao":     "Atualização",
         }
         _drop = ["latitude","longitude","category","tp_unidade","tp_pfpj",
-                 "qt_leito_internacao","qt_leito_sus","atend_ambulatorial","nu_telefone"]
+                 "qt_leito_internacao","qt_leito_sus","atend_ambulatorial",
+                 "nu_telefone","ds_natureza_juridica"]
 
         c1, c2, c3 = st.columns([3, 1, 1])
         with c1:
@@ -341,6 +341,24 @@ if st.session_state.result_map is not None:
                          use_container_width=True, height=350, hide_index=True)
             st.caption(f"{len(municipalities)} municípios · {distance_km} km por rodovias")
 
+
+else:
+    st.info("👈 **Configure a busca** na barra lateral e clique em **Buscar estabelecimentos**.", icon="🗺️")
+    st.markdown("""
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:20px">
+      <div style="background:#E3F2FD;padding:20px;border-radius:10px;border-left:4px solid #1565C0">
+        <h4 style="margin:0;color:#1565C0">🛣️ Rotas reais</h4>
+        <p style="margin:8px 0 0;color:#555;font-size:14px">Distâncias por Google Distance Matrix — rodovias reais, não raio simples. Filtro de corredor mantém só municípios ao longo das estradas.</p>
+      </div>
+      <div style="background:#E8F5E9;padding:20px;border-radius:10px;border-left:4px solid #2E7D32">
+        <h4 style="margin:0;color:#2E7D32">🏥 Dados CNES/DATASUS</h4>
+        <p style="margin:8px 0 0;color:#555;font-size:14px">Todos os estabelecimentos registrados: tipo, endereço, turno, gestão e natureza jurídica. Telefones via CNES e Google Places.</p>
+      </div>
+      <div style="background:#FFF3E0;padding:20px;border-radius:10px;border-left:4px solid #E65100">
+        <h4 style="margin:0;color:#E65100">⭐ Score de potencial</h4>
+        <p style="margin:8px 0 0;color:#555;font-size:14px">Algoritmo prioriza hospitais, farmácias e clínicas de especialidade com maior potencial de consumo de medicamentos de alto custo.</p>
+      </div>
+    </div>""", unsafe_allow_html=True)
 
 # ── Rodapé ────────────────────────────────────────────────────────────────────
 st.markdown(
