@@ -106,6 +106,11 @@ with st.sidebar:
         use_container_width=True,
     )
 
+    if st.session_state.get("show_results", False):
+        if st.button("🏠 Tela inicial  (mantém pesquisa)", use_container_width=True):
+            st.session_state["show_results"] = False
+            st.rerun()
+
 # ── Estado da sessão ──────────────────────────────────────────────────────────
 if "result_map"  not in st.session_state: st.session_state.result_map  = None
 if "result_df"   not in st.session_state: st.session_state.result_df   = None
@@ -222,9 +227,10 @@ if search_btn:
     st.session_state.result_df    = establishments
     st.session_state.result_munis = municipalities
     st.session_state.origin_data  = origin
+    st.session_state["show_results"] = True
 
 # ── Exibição dos resultados ───────────────────────────────────────────────────
-if st.session_state.result_map is not None:
+if st.session_state.result_map is not None and st.session_state.get("show_results", False):
     origin        = st.session_state.origin_data
     municipalities = st.session_state.result_munis
     establishments = st.session_state.result_df
@@ -316,7 +322,8 @@ if st.session_state.result_map is not None:
             "dt_atualizacao":     "Atualização",
         }
         _drop = ["latitude","longitude","category","tp_unidade","tp_pfpj",
-                 "qt_leito_internacao","qt_leito_sus","atend_ambulatorial","nu_telefone"]
+                 "qt_leito_internacao","qt_leito_sus","atend_ambulatorial",
+                 "nu_telefone","ds_natureza_juridica"]
 
         c1, c2, c3 = st.columns([3, 1, 1])
         with c1:
@@ -368,6 +375,51 @@ if st.session_state.result_map is not None:
                          use_container_width=True, height=350, hide_index=True)
             st.caption(f"{len(municipalities)} municípios · {distance_km} km por rodovias")
 
+
+else:
+    has_prev = st.session_state.result_map is not None
+    if has_prev:
+        st.info("💾 Pesquisa salva em memória. Clique em **Buscar** para refazer ou veja os resultados abaixo.", icon="💾")
+        if st.button("📊 Ver resultados da última pesquisa", type="primary"):
+            st.session_state["show_results"] = True
+            st.rerun()
+    else:
+        st.info("👈 Configure a busca na barra lateral e clique em **Buscar estabelecimentos**.", icon="🗺️")
+    st.markdown("""
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:20px">
+      <div style="background:#E3F2FD;padding:20px;border-radius:10px;border-left:4px solid #1565C0">
+        <h4 style="margin:0;color:#1565C0">🛣️ Rotas reais</h4>
+        <p style="margin:8px 0 0;color:#555;font-size:14px">Distâncias por Google Distance Matrix — rodovias reais, não raio simples. Filtro de corredor mantém só municípios ao longo das estradas.</p>
+      </div>
+      <div style="background:#E8F5E9;padding:20px;border-radius:10px;border-left:4px solid #2E7D32">
+        <h4 style="margin:0;color:#2E7D32">🏥 Dados CNES/DATASUS</h4>
+        <p style="margin:8px 0 0;color:#555;font-size:14px">Todos os estabelecimentos registrados: tipo, endereço, turno, gestão e natureza jurídica. Telefones via CNES, Receita Federal e Google.</p>
+      </div>
+      <div style="background:#FFF3E0;padding:20px;border-radius:10px;border-left:4px solid #E65100">
+        <h4 style="margin:0;color:#E65100">⭐ Score de potencial</h4>
+        <p style="margin:8px 0 0;color:#555;font-size:14px">Algoritmo prioriza hospitais, farmácias e clínicas com maior potencial de consumo de medicamentos de alto custo.</p>
+      </div>
+    </div>""", unsafe_allow_html=True)
+    st.markdown("---")
+    with st.expander("📊 Como é calculado o Score de Potencial?", expanded=False):
+        st.markdown("""
+O score vai de **0 a 100 pontos** e estima o potencial de consumo de medicamentos de alto custo:
+
+| Fator | Critério | Pontos |
+|---|---|---|
+| **Tipo de unidade** | Hospital Geral / Especializado | 50 |
+| | Farmácia | 40 |
+| | UPA / Pronto-Socorro / Clínica de Especialidade | 30 |
+| | UBS / Posto de Saúde | 10 |
+| | Outros (consultórios, CAPS…) | 5 |
+| **Capacidade hospitalar** | Flags de internação + cirurgia + obstetrícia | até 30 |
+| **Serviços adicionais** | Centro cirúrgico, obstétrico, ambulatorial | até 10 |
+| **Gestão** | Estadual / Federal | +10 · Dupla +6 · Municipal +4 |
+
+**Interpretação:** 🟢 ≥ 60 Alto · 🟠 40–59 Médio · ⚫ < 40 Baixo
+
+> Score é indicador de priorização comercial, não de qualidade assistencial.
+        """)
 
 # ── Rodapé ────────────────────────────────────────────────────────────────────
 st.markdown(
