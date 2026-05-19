@@ -233,8 +233,22 @@ def _calc_score(row: pd.Series) -> int:
 # ── Enriquecimento e normalização ─────────────────────────────────────────────
 
 def _fmt_phone(raw: str) -> str:
-    """Formata número de telefone brasileiro: '2432831280' → '(24) 3283-1280'."""
+    """Formata número de telefone brasileiro com validação de DDD."""
     digits = "".join(c for c in str(raw or "") if c.isdigit())
+    if not digits:
+        return ""
+    # 0800 / 0300 / 0500
+    if digits.startswith("0800") and len(digits) >= 11:
+        return f"0800-{digits[4:7]}-{digits[7:11]}"
+    if (digits.startswith("0300") or digits.startswith("0500")) and len(digits) >= 10:
+        return f"{digits[:4]}-{digits[4:7]}-{digits[7:]}"
+    # DDD válido: 11–99
+    try:
+        ddd = int(digits[:2])
+    except Exception:
+        return str(raw or "").strip()
+    if not (11 <= ddd <= 99):
+        return str(raw or "").strip()
     if len(digits) == 10:
         return f"({digits[:2]}) {digits[2:6]}-{digits[6:]}"
     if len(digits) == 11:
