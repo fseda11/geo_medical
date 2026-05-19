@@ -28,6 +28,19 @@ from municipalities import municipality_ibge_to_cnes_code
 
 # ── Dicionários de decodificação CNES ─────────────────────────────────────────
 
+ESTADO_TO_UF = {
+    "ACRE":"AC","ALAGOAS":"AL","AMAPA":"AP","AMAPÁ":"AP","AMAZONAS":"AM",
+    "BAHIA":"BA","CEARA":"CE","CEARÁ":"CE","ESPIRITO SANTO":"ES","ESPÍRITO SANTO":"ES",
+    "GOIAS":"GO","GOIÁS":"GO","MARANHAO":"MA","MARANHÃO":"MA",
+    "MATO GROSSO":"MT","MATO GROSSO DO SUL":"MS","MINAS GERAIS":"MG",
+    "PARA":"PA","PARÁ":"PA","PARAIBA":"PB","PARAÍBA":"PB","PARANA":"PR","PARANÁ":"PR",
+    "PERNAMBUCO":"PE","PIAUI":"PI","PIAUÍ":"PI","RIO DE JANEIRO":"RJ",
+    "RIO GRANDE DO NORTE":"RN","RIO GRANDE DO SUL":"RS",
+    "RONDONIA":"RO","RONDÔNIA":"RO","RORAIMA":"RR","SANTA CATARINA":"SC",
+    "SAO PAULO":"SP","SÃO PAULO":"SP","SERGIPE":"SE","TOCANTINS":"TO",
+    "DISTRITO FEDERAL":"DF",
+}
+
 GESTAO_LABELS = {
     "M": "Municipal",
     "E": "Estadual",
