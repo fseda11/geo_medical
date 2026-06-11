@@ -1,0 +1,499 @@
+"""
+cnes.py — Integração com a API pública do DATASUS/CNES
+  - Busca estabelecimentos por município (com paginação)
+  - Enriquece com dados de leitos, tipo, gestão
+  - Calcula score de potencial de medicamentos de alto custo
+  - Cache por município para evitar requisições repetidas
+"""
+
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, List, Optional
+
+import pandas as pd
+import requests
+import streamlit as st
+
+from config import (
+    CNES_BASE_URL,
+    CNES_PAGE_SIZE,
+    UNIT_TYPES,
+    CATEGORY_MAP,
+    SCORE_WEIGHTS,
+    HIGH_COST_RELEVANT_TYPES,
+    GOOGLE_API_KEY,
+)
+from municipalities import municipality_ibge_to_cnes_code
+
+
+# ── Dicionários de decodificação CNES ─────────────────────────────────────────
+
+ESTADO_TO_UF = {
+    "ACRE":"AC","ALAGOAS":"AL","AMAPA":"AP","AMAPÁ":"AP","AMAZONAS":"AM",
+    "BAHIA":"BA","CEARA":"CE","CEARÁ":"CE","ESPIRITO SANTO":"ES","ESPÍRITO SANTO":"ES",
+    "GOIAS":"GO","GOIÁS":"GO","MARANHAO":"MA","MARANHÃO":"MA",
+    "MATO GROSSO":"MT","MATO GROSSO DO SUL":"MS","MINAS GERAIS":"MG",
+    "PARA":"PA","PARÁ":"PA","PARAIBA":"PB","PARAÍBA":"PB","PARANA":"PR","PARANÁ":"PR",
+    "PERNAMBUCO":"PE","PIAUI":"PI","PIAUÍ":"PI","RIO DE JANEIRO":"RJ",
+    "RIO GRANDE DO NORTE":"RN","RIO GRANDE DO SUL":"RS",
+    "RONDONIA":"RO","RONDÔNIA":"RO","RORAIMA":"RR","SANTA CATARINA":"SC",
+    "SAO PAULO":"SP","SÃO PAULO":"SP","SERGIPE":"SE","TOCANTINS":"TO",
+    "DISTRITO FEDERAL":"DF",
+}
+
+GESTAO_LABELS = {
+    "M": "Municipal",
+    "E": "Estadual",
+    "S": "Sem gestão (Privado)",
+    "D": "Dupla (Municipal + Estadual)",
+}
+
+NATUREZA_LABELS = {
+    "1000": "Órgão Público Federal",       "1014": "Autarquia Federal",
+    "1023": "Empresa Pública Federal",     "1031": "Fundação Pública Federal",
+    "1040": "Órgão Público Estadual",      "1104": "Autarquia Estadual",
+    "1112": "Empresa Pública Estadual",    "1120": "Fundação Pública Estadual",
+    "1139": "Órgão Público Municipal",     "1147": "Autarquia Municipal",
+    "1155": "Empresa Pública Municipal",   "1163": "Fundação Pública Municipal",
+    "2011": "Econ. Mista Federal",         "2038": "Econ. Mista Estadual",
+    "2054": "Econ. Mista Municipal",
+    "3034": "Serv. Social Autônomo",       "3069": "Fundação Privada",
+    "3077": "Organização Religiosa",       "3085": "Entidade Sindical",
+    "1244": "Serv. Social Autônomo (SESI/SESC)",
+    "3131": "Cooperativa",                 "3999": "Associação Privada (ONG/OS)",
+    "4000": "Empresa Privada",             "4030": "Soc. Ltda.",
+    "4041": "Soc. Anônima (S/A)",          "4120": "Empresa Individual",
+    "5010": "Empresário Individual (PF)",  "5069": "MEI",
+}
+
+def _dec_gestao(v: str) -> str:
+    return GESTAO_LABELS.get(str(v).strip().upper(), v or "—")
+
+def _dec_nat(v) -> str:
+    s = str(v).strip() if v else ""
+    if s in NATUREZA_LABELS:
+        return NATUREZA_LABELS[s]
+    try:
+        n = int(s)
+        if 1000 <= n < 2000: return "Entidade Pública"
+        if 2000 <= n < 3000: return "Economia Mista"
+        if 3000 <= n < 4000: return "Privado Sem Fins Lucrativos"
+        if 4000 <= n < 5000: return "Empresa Privada"
+        if n >= 5000:        return "Pessoa Física / MEI"
+    except Exception:
+        pass
+    return s or "—"
+
+def _yn(v) -> str:
+    try:
+        return "Sim" if int(v) else "Não"
+    except Exception:
+        return "—"
+
+def _yn_str(v: str) -> str:
+    s = str(v or "").strip().upper()
+    if s == "SIM": return "Sim"
+    if s == "NAO" or s == "NÃO": return "Não"
+    return s or "—"
+
+# ── Cache de telefones Google ──────────────────────────────────────────────────
+_google_phone_cache: Dict[str, str] = {}
+_geocode_cache: Dict[str, tuple] = {}
+
+def _geocode_address(logradouro: str, numero: str, bairro: str,
+                      municipio: str, uf: str, cep: str = "") -> tuple:
+    """Geocodifica endereço do CNES via Google. Retorna (lat, lng) ou (None, None)."""
+    addr = ", ".join(p for p in [
+        f"{logradouro} {numero}".strip(), bairro, municipio, uf, "Brasil"
+    ] if p and str(p).strip() not in ("", "None"))
+    if not addr or addr == "Brasil":
+        return None, None
+    if addr in _geocode_cache:
+        return _geocode_cache[addr]
+    try:
+        resp = requests.get(
+            "https://maps.googleapis.com/maps/api/geocode/json",
+            params={"address": addr, "region": "br", "key": GOOGLE_API_KEY},
+            timeout=4,
+        )
+        results = resp.json().get("results", [])
+        if results:
+            loc = results[0]["geometry"]["location"]
+            result = (loc["lat"], loc["lng"])
+            _geocode_cache[addr] = result
+            return result
+    except Exception:
+        pass
+    _geocode_cache[addr] = (None, None)
+    return None, None
+
+
+def _get_phone_from_cnpj(cnpj: str) -> str:
+    """BrasilAPI: telefone direto da Receita Federal pelo CNPJ."""
+    cnpj_clean = "".join(c for c in str(cnpj) if c.isdigit())
+    if len(cnpj_clean) != 14:
+        return ""
+    key = f"cnpj:{cnpj_clean}"
+    if key in _google_phone_cache:
+        return _google_phone_cache[key]
+    phone = ""
+    try:
+        r = requests.get(
+            f"https://brasilapi.com.br/api/cnpj/v1/{cnpj_clean}",
+            timeout=5,
+        )
+        if r.status_code == 200:
+            d = r.json()
+            raw = d.get("ddd_telefone_1") or d.get("ddd_telefone_2") or ""
+            raw = raw.strip()
+            if raw:
+                # "21 25551234" → "(21) 2555-1234"
+                digits = "".join(c for c in raw if c.isdigit())
+                if len(digits) == 10:
+                    phone = f"({digits[:2]}) {digits[2:6]}-{digits[6:]}"
+                elif len(digits) == 11:
+                    phone = f"({digits[:2]}) {digits[2:7]}-{digits[7:]}"
+                else:
+                    phone = raw
+    except Exception:
+        phone = ""
+    _google_phone_cache[key] = phone
+    return phone
+
+
+def _get_google_phone(name: str, city: str) -> str:
+    """Fallback via Google Places (findplacefromtext) quando não há CNPJ."""
+    key = f"{name}|{city}"
+    if key in _google_phone_cache:
+        return _google_phone_cache[key]
+    phone = ""
+    try:
+        r = requests.get(
+            "https://maps.googleapis.com/maps/api/place/findplacefromtext/json",
+            params={"input": f"{name} {city} Brasil", "inputtype": "textquery",
+                    "fields": "formatted_phone_number", "key": GOOGLE_API_KEY},
+            timeout=6,
+        )
+        phone = (r.json().get("candidates") or [{}])[0].get("formatted_phone_number", "") or ""
+    except Exception:
+        phone = ""
+    _google_phone_cache[key] = phone
+    return phone
+
+
+# ── Busca paginada por município ──────────────────────────────────────────────
+
+def _fetch_cnes_municipality(co_municipio: str) -> List[Dict]:
+    """
+    Baixa todos os estabelecimentos de um município via CNES API.
+    Cache de 1 hora por município.
+    """
+    url = f"{CNES_BASE_URL}/estabelecimentos"
+    all_items: List[Dict] = []
+    offset = 0
+    max_pages = 30  # segurança contra loop infinito
+
+    for _ in range(max_pages):
+        params = {
+            "codigo_municipio": co_municipio,
+            "limit": CNES_PAGE_SIZE,
+            "offset": offset,
+        }
+        try:
+            resp = requests.get(url, params=params, timeout=15)
+            if resp.status_code != 200:
+                break
+            data = resp.json()
+            items = data.get("estabelecimentos", [])
+            if not items:
+                break
+            all_items.extend(items)
+            if len(items) < CNES_PAGE_SIZE:
+                break
+            offset += CNES_PAGE_SIZE
+            time.sleep(0.05)
+        except Exception:
+            break
+
+    return all_items
+
+
+# ── Score de potencial ────────────────────────────────────────────────────────
+
+def _calc_score(row: pd.Series) -> int:
+    """
+    Score de potencial de consumo de medicamentos de alto custo.
+    Máximo: 100 pontos.
+    """
+    score = 0
+
+    # 1. Tipo de unidade (0–50)
+    cat = row.get("category", "outro")
+    score += SCORE_WEIGHTS.get(cat, 5)
+
+    # 2. Capacidade via flags booleanas (0–30)
+    leitos_proxy = int(row.get("qt_leito_internacao") or 0)
+    if leitos_proxy >= 75:    score += 30
+    elif leitos_proxy >= 50:  score += 20
+    elif leitos_proxy >= 25:  score += 10
+    elif leitos_proxy > 0:    score += 5
+
+    # 3. Serviços adicionais (0–10) — suporta "Sim"/"Não" ou 0/1
+    def _sb(v):
+        if isinstance(v, str): return 1 if v.strip().lower() == "sim" else 0
+        try: return int(v or 0)
+        except: return 0
+    score += min(10, (_sb(row.get("tem_cirurgia")) +
+                      _sb(row.get("tem_obstetrico")) +
+                      _sb(row.get("atend_ambulatorial"))) * 3)
+
+    # 4. Gestão — aceita código ("M") ou decodificado ("Municipal")
+    gestao = str(row.get("tp_gestao", "")).upper()
+    if any(x in gestao for x in ("ESTADUAL", "FEDERAL", "SEM GEST")):
+        score += 10
+    elif "DUPLA" in gestao or gestao == "D":
+        score += 6
+    elif "MUNICIPAL" in gestao or gestao == "M":
+        score += 4
+
+    return min(score, 100)
+
+
+# ── Enriquecimento e normalização ─────────────────────────────────────────────
+
+def _fmt_phone(raw: str) -> str:
+    """Formata número de telefone brasileiro com validação de DDD."""
+    digits = "".join(c for c in str(raw or "") if c.isdigit())
+    if not digits:
+        return ""
+    # 0800 / 0300 / 0500
+    if digits.startswith("0800") and len(digits) >= 11:
+        return f"0800-{digits[4:7]}-{digits[7:11]}"
+    if (digits.startswith("0300") or digits.startswith("0500")) and len(digits) >= 10:
+        return f"{digits[:4]}-{digits[4:7]}-{digits[7:]}"
+    # DDD válido: 11–99
+    try:
+        ddd = int(digits[:2])
+    except Exception:
+        return str(raw or "").strip()
+    if not (11 <= ddd <= 99):
+        return str(raw or "").strip()
+    if len(digits) == 10:
+        return f"({digits[:2]}) {digits[2:6]}-{digits[6:]}"
+    if len(digits) == 11:
+        return f"({digits[:2]}) {digits[2:7]}-{digits[7:]}"
+    return str(raw or "").strip()
+
+
+def _normalize_establishment(est: Dict, muni_row: pd.Series) -> Dict:
+    """
+    Normaliza campos da API CNES — formato atual (nomes por extenso).
+    Parâmetro correto: codigo_municipio (não co_municipio).
+    """
+    tp = est.get("codigo_tipo_unidade") or est.get("tp_unidade")
+    try:
+        tp = int(tp)
+    except Exception:
+        tp = 0
+
+    category  = CATEGORY_MAP.get(tp, "outro")
+    type_desc = UNIT_TYPES.get(tp, "Outro")
+
+    _lat_raw = est.get("latitude_estabelecimento_decimo_grau")
+    _lng_raw = est.get("longitude_estabelecimento_decimo_grau")
+    _coords_from_cnes = bool(_lat_raw and _lng_raw)
+    lat = _lat_raw or muni_row.get("latitude")
+    lng = _lng_raw or muni_row.get("longitude")
+    try:
+        lat = float(lat) if lat is not None else None
+        lng = float(lng) if lng is not None else None
+    except Exception:
+        lat = muni_row.get("latitude")
+        lng = muni_row.get("longitude")
+
+    tem_internacao = int(est.get("estabelecimento_possui_atendimento_hospitalar") or 0)
+    tem_cirurgia   = int(est.get("estabelecimento_possui_centro_cirurgico")       or 0)
+    tem_obstetrico = int(est.get("estabelecimento_possui_centro_obstetrico")      or 0)
+    leitos_proxy   = (tem_internacao + tem_cirurgia + tem_obstetrico) * 25
+
+    esfera   = str(est.get("descricao_esfera_administrativa") or "").upper()
+    natureza = "Público" if any(x in esfera for x in ("MUNICIPAL","ESTADUAL","FEDERAL"))                else ("Privado" if str(est.get("descricao_natureza_juridica_estabelecimento") or "").startswith("4")
+                     else "Público/Filantrópico")
+
+    # UF: lê direto do muni_row; se vier NaN, faz lookup na tabela IBGE
+    import math as _math
+    _uf_raw = muni_row.get("uf")
+    if _uf_raw is not None and not (isinstance(_uf_raw, float) and _math.isnan(_uf_raw)):
+        uf = str(_uf_raw).strip().upper()
+    else:
+        uf = ""
+    if not uf:
+        try:
+            from municipalities import _load_municipalities_csv
+            _ibge = str(muni_row.get("codigo_ibge", "")).strip()
+            _mdf  = _load_municipalities_csv()
+            _row  = _mdf[_mdf["codigo_ibge"] == _ibge]
+            if not _row.empty:
+                _v = _row["uf"].iloc[0]
+                uf = "" if (isinstance(_v, float) and _math.isnan(_v)) else str(_v).strip().upper()
+        except Exception:
+            uf = ""
+    # Último recurso: nome do estado
+    if not uf:
+        uf = ESTADO_TO_UF.get(str(muni_row.get("estado") or "").strip().upper(), "")
+
+    return {
+        "co_cnes":              str(est.get("codigo_cnes") or ""),
+        "co_cnpj":              str(est.get("numero_cnpj") or est.get("numero_cnpj_entidade") or ""),
+        "no_razao_social":      (est.get("nome_razao_social") or "").strip().title(),
+        "no_fantasia":          (est.get("nome_fantasia") or "").strip().title(),
+        "tp_unidade":           tp,
+        "ds_tipo_unidade":      type_desc,
+        "category":             category,
+        "no_logradouro":        (est.get("endereco_estabelecimento") or "").title(),
+        "nu_endereco":          est.get("numero_estabelecimento", ""),
+        "no_bairro":            (est.get("bairro_estabelecimento") or "").title(),
+        "co_cep":               est.get("codigo_cep_estabelecimento", ""),
+        "municipio_nome":       muni_row.get("nome", ""),
+        "uf":                   uf,
+        "road_km":              round(float(muni_row.get("road_km") or 0), 1),
+        "duration_text":        muni_row.get("duration_text", ""),
+        "latitude":             lat,
+        "longitude":            lng,
+        "nu_telefone_cnes":     _fmt_phone(est.get("numero_telefone_estabelecimento", "")),
+        "nu_telefone_google":   "",   # preenchido em pós-processamento
+        "no_email":             est.get("endereco_email_estabelecimento", "") or "",
+        "qt_leito_internacao":  leitos_proxy,
+        "qt_leito_sus":         tem_internacao * 25,
+        "tem_cirurgia":         _yn(tem_cirurgia),
+        "tem_obstetrico":       _yn(tem_obstetrico),
+        "atend_ambulatorial":   _yn(est.get("estabelecimento_possui_atendimento_ambulatorial") or 0),
+        "atend_sus":            _yn_str(est.get("estabelecimento_faz_atendimento_ambulatorial_sus", "")),
+        "tp_gestao":            _dec_gestao(est.get("tipo_gestao", "")),
+        "natureza_juridica":    _dec_nat(est.get("descricao_natureza_juridica_estabelecimento", "")),
+        "turno_atendimento":    (est.get("descricao_turno_atendimento") or "").replace("ATENDIMENTO ", "").title(),
+        "dt_atualizacao":       est.get("data_atualizacao", ""),
+        "coords_from_cnes":     _coords_from_cnes,
+    }
+
+
+def _safe_int(val) -> Optional[int]:
+    try:
+        return int(val) if val not in (None, "", "None") else 0
+    except Exception:
+        return 0
+
+
+# ── Ponto de entrada principal ────────────────────────────────────────────────
+
+def _worker(args):
+    muni, only_relevant = args
+    co = municipality_ibge_to_cnes_code(str(muni.get("codigo_ibge", "")))
+    if not co or co == "nan":
+        return []
+    rows = []
+    for est in _fetch_cnes_municipality(co):
+        n = _normalize_establishment(est, muni)
+        if only_relevant and n.get("tp_unidade", 0) not in HIGH_COST_RELEVANT_TYPES:
+            continue
+        rows.append(n)
+    return rows
+
+
+def get_establishments_for_municipalities(
+    municipalities: pd.DataFrame,
+    only_relevant: bool = False,
+    progress_bar=None,
+    progress_text_slot=None,
+) -> pd.DataFrame:
+    """Busca CNES em paralelo (5 workers) e enriquece com telefone Google."""
+    all_rows: List[Dict] = []
+    total = len(municipalities)
+    done  = 0
+
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        futures = {ex.submit(_worker, (row, only_relevant)): row
+                   for _, row in municipalities.iterrows()}
+        for fut in as_completed(futures):
+            done += 1
+            if progress_bar:   progress_bar.progress(done / total)
+            if progress_text_slot:
+                progress_text_slot.text(f"🏥 CNES: {done}/{total} municípios")
+            try:
+                all_rows.extend(fut.result())
+            except Exception:
+                pass
+
+    if not all_rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(all_rows)
+    df["score_potencial"] = df.apply(_calc_score, axis=1)
+    df = df.dropna(subset=["latitude", "longitude"])
+    df = df.sort_values("score_potencial", ascending=False).reset_index(drop=True)
+
+    # Geocodifica endereços dos estabelecimentos sem coordenadas CNES
+    no_coords = df.index[~df["coords_from_cnes"]].tolist()
+    if no_coords and progress_text_slot:
+        progress_text_slot.text(f"📍 Geocodificando {len(no_coords)} endereços via CNES…")
+
+    def _geo_worker(idx):
+        r = df.loc[idx]
+        lat, lng = _geocode_address(
+            str(r.get("no_logradouro","")), str(r.get("nu_endereco","")),
+            str(r.get("no_bairro","")),     str(r.get("municipio_nome","")),
+            str(r.get("uf","")),            str(r.get("co_cep",""))
+        )
+        return idx, lat, lng
+
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        for idx, lat, lng in ex.map(_geo_worker, no_coords):
+            if lat and lng:
+                df.at[idx, "latitude"]  = lat
+                df.at[idx, "longitude"] = lng
+
+    # ── Telefone: BrasilAPI para todos sem CNES; Google só para score >= 60
+    sem_tel = df["nu_telefone_cnes"].str.strip().eq("") | df["nu_telefone_cnes"].isna()
+    targets = df.index[sem_tel].tolist()
+
+    if targets and progress_text_slot:
+        progress_text_slot.text(f"📞 Buscando telefones para {len(targets)} estabelecimentos…")
+
+    def _phone_worker(idx):
+        row = df.loc[idx]
+        cnpj  = str(row.get("co_cnpj") or "").strip()
+        phone = _get_phone_from_cnpj(cnpj) if cnpj else ""
+        # Google apenas para alto potencial sem telefone (evita 500 chamadas)
+        if not phone and row.get("score_potencial", 0) >= 60:
+            nome  = (row.get("no_fantasia") or row.get("no_razao_social") or "").strip()
+            phone = _get_google_phone(nome, row.get("municipio_nome", ""))
+        return idx, phone
+
+    with ThreadPoolExecutor(max_workers=20) as ex:
+        for idx, phone in ex.map(_phone_worker, targets):
+            df.at[idx, "nu_telefone_google"] = phone
+
+    return df
+
+
+# ── Estatísticas resumidas ────────────────────────────────────────────────────
+
+def summarize_establishments(df: pd.DataFrame) -> Dict:
+    """Retorna dicionário com métricas resumidas para o dashboard."""
+    if df.empty:
+        return {}
+
+    return {
+        "total":            len(df),
+        "municipios":       df["municipio_nome"].nunique(),
+        "hospitais":        (df["category"] == "hospital").sum(),
+        "clinicas":         (df["category"] == "clinica").sum(),
+        "upas":             (df["category"] == "upa").sum(),
+        "farmacias":        (df["category"] == "farmacia").sum(),
+        "ubs":              (df["category"] == "ubs").sum(),
+        "outros":           (df["category"] == "outro").sum(),
+        "total_leitos":     int(df["qt_leito_internacao"].sum()),
+        "total_leitos_sus": int(df["qt_leito_sus"].sum()),
+        "alto_potencial":   (df["score_potencial"] >= 40).sum(),
+        "score_medio":      round(df["score_potencial"].mean(), 1),
+    }
