@@ -1,10 +1,11 @@
 """
 Configurações centrais da aplicação Health Route Intelligence
 """
+import streamlit as st
 
 # ── API Keys ──────────────────────────────────────────────────────────────────
 # Chave "Google Maps API" (mais completa) — usada em produção
-GOOGLE_API_KEY = "AIzaSyCeOcS2Cnz7p5iPhFw3SK2dtQ9aGgqSR3A"
+GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", "AIzaSyCeOcS2Cnz7p5iPhFw3SK2dtQ9aGgqSR3A")
 
 # ── URLs de APIs externas ─────────────────────────────────────────────────────
 GMAPS_GEOCODE_URL       = "https://maps.googleapis.com/maps/api/geocode/json"
@@ -14,7 +15,7 @@ GMAPS_PLACES_AC_URL     = "https://maps.googleapis.com/maps/api/place/autocomple
 GMAPS_PLACES_DETAIL_URL = "https://maps.googleapis.com/maps/api/place/details/json"
 
 CNES_BASE_URL           = "https://apidadosabertos.saude.gov.br/cnes"
-DATAJUD_KEY             = "cDZHYzlZa0JadVREZDJCendQbXY6SkJlTzNjLV9TRENyQk1RdnFKZGRQdw=="
+DATAJUD_KEY             = st.secrets.get("DATAJUD_KEY",    "cDZHYzlZa0JadVREZDJCendQbXY6SkJlTzNjLV9TRENyQk1RdnFKZGRQdw==")
 # Nota: chave pública CNJ — se expirar, verificar em https://datajud-wiki.cnj.jus.br/api-publica/acesso
 MUNICIPALITIES_CSV_URL  = (
     "https://raw.githubusercontent.com/kelvins/municipios-brasileiros"
